@@ -8240,35 +8240,2343 @@ Now, if you send the XML ORD-002 again, after 3 retries, you will see it appears
 
 #### <a name="chapter4part3"></a>Chapter 4 - Part 3: On Exception and Try-Catch-Finally for granular error handling
 
+In enterprise integration, robust error handling is not just a best practice; it's a fundamental requirement for building resilient and reliable systems. While the Dead Letter Channel (DLC) (as discussed in the previous lesson) offers a powerful mechanism for catching unhandled exceptions and redirecting them for later processing, it often operates at a broader, route-wide or system-wide level. Many integration scenarios, however, demand more granular control over error conditions, allowing specific exceptions to be handled precisely at the point of failure, within particular segments of a route, or with custom retry and recovery logic. This lesson delves into Apache Camel's powerful onException and doTry-doCatch-doFinally constructs, which provide the fine-grained control necessary to implement sophisticated and context-aware error handling strategies, ensuring your integration solutions can gracefully recover from unexpected events and maintain data integrity in complex workflows like our E-commerce Order Processing system.
+
 #### <a name="chapter4part3.1"></a>Chapter 4 - Part 3.1: Understanding Granular Error Handling with onException
+
+The onException clause in Apache Camel allows you to define specific error handling strategies for particular exception types or hierarchies. Unlike the Dead Letter Channel, which acts as a catch-all for unhandled exceptions, onException enables you to intercept and manage exceptions precisely, often within a defined scope (like a specific route or even globally). This provides a more reactive and context-sensitive approach to error management, letting you execute custom logic, transform error messages, or initiate recovery procedures based on the nature of the error.
+
+**Defining onException Scope**
+
+onException can be defined at different scopes, influencing where it applies:
+
+- Global Scope (CamelContext level): Defined directly on the CamelContext. This handler applies to all routes in the context unless a more specific handler overrides it.
+- Route Scope: Defined at the beginning of a specific route. This handler applies only to that particular route.
+- Local Scope (within doTry): As we'll see, onException can also be nested within a doTry block for even more localized handling.
+
+Camel prioritizes onException clauses by specificity: the most specific onException clause (e.g., for MySpecificException within a route) takes precedence over a more general one (e.g., for Exception globally).
+
+**Basic onException Configuration**
+
+Let's look at the core components of an onException clause.
+
+Consider our E-commerce Order Processing system. An order might fail if the product lookup service is unavailable or returns an error.
+
+```java
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderProcessingRoutes extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+
+        // Define a global exception handler for HttpOperationFailedException
+        // This will catch HTTP errors across all routes in this CamelContext,
+        // unless a more specific onException exists.
+        onException(org.apache.camel.http.base.HttpOperationFailedException.class)
+            .maximumRedeliveries(3) // Try to redeliver the exchange up to 3 times
+            .redeliveryDelay(2000) // Wait 2 seconds before each redelivery attempt
+            .backOffMultiplier(2) // Increase the delay by 2x for each subsequent redelivery
+            .handled(true) // Indicate that this exception has been handled and should not propagate further
+            .process(new Processor() { // Custom logic for handling the exception
+                @Override
+                public void process(Exchange exchange) throws Exception {
+                    // Log the error details
+                    Exception caused = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                    String failedEndpoint = exchange.getProperty(Exchange.FAILURE_ENDPOINT, String.class);
+                    log.error("HTTP operation failed for endpoint: {} with message: {}", failedEndpoint, caused.getMessage());
+
+                    // Set a custom error status in the message body or header
+                    exchange.getIn().setBody("{\"status\": \"FAILED_PRODUCT_LOOKUP\", \"error\": \"" + caused.getMessage() + "\"}");
+                    exchange.getIn().setHeader(Exchange.HTTP_RESPONSE_CODE, 500); // Indicate internal server error
+                }
+            })
+            .to("log:httpErrorLogger?level=WARN") // Log to a specific logger
+            .end(); // End the onException clause
+
+        // Route to process orders, including a step that might fail due to HTTP
+        from("direct:processOrder")
+            .routeId("orderProcessorRoute")
+            .log("Processing order: ${body}")
+            .to("http://product-service/lookup?productCode=${header.productCode}") // Imagine this service looks up product details
+            .log("Product details retrieved: ${body}")
+            .to("direct:persistOrderDetails") // Continue to another step if successful
+            .end();
+
+        // A mock endpoint for persisting order details
+        from("direct:persistOrderDetails")
+            .routeId("persistOrderDetailsRoute")
+            .log("Persisting order details: ${body}")
+            .transform().simple("Order successfully processed for product: ${header.productCode}")
+            .end();
+    }
+}
+```
+
+In this example:
+
+- onException(HttpOperationFailedException.class): Specifies that this handler will activate if an HttpOperationFailedException occurs within any route that uses this RouteBuilder (or globally if defined on the context).
+- maximumRedeliveries(3): Camel will attempt to re-send the exchange to the failing endpoint up to 3 times.
+- redeliveryDelay(2000): There will be a 2-second delay between each redelivery attempt.
+- backOffMultiplier(2): The redelivery delay will be multiplied by 2 for each subsequent attempt (e.g., 2s, then 4s, then 8s).
+- handled(true): This is crucial. It tells Camel that this onException block has dealt with the exception, and the exception should not propagate further up the call stack or be caught by a Dead Letter Channel. After the onException block completes, the original route stops processing for the failed exchange. The modified exchange from within the onException block is returned, or the route simply ends, depending on whether continued() is also used.
+- .process(...): Allows execution of custom Java code using a Processor to log, transform, or perform other actions on the Exchange when the exception occurs.
+- .to("log:httpErrorLogger?level=WARN"): You can route the exchange to another endpoint (e.g., a logging service, a monitoring endpoint) within the onException block.
+
+**handled(true) vs. continued(true)**
+
+These two flags are often a source of confusion but define fundamentally different recovery behaviors:
+
+- handled(true): The onException block takes over the processing of the Exchange. Once the onException block finishes, the original route stops processing the exchange. The exception is considered "handled" and does not propagate. If you have steps after the failing endpoint, they will not be executed for this exchange.
+  - Scenario: An order validation fails because the quantity is negative. You handle this by logging the error, setting a custom "validation failed" status, and then stopping further processing of this invalid order in the main flow. The onException block dictates the final state of the exchange.
+- continued(true): This is similar to handled(true) in that the onException block processes the exchange, and the exception is considered "handled." However, after the onException block completes, the original route continues processing from the point of failure (or the next step if the failing step is to be skipped). The Exchange object, potentially modified by the onException block, re-enters the main route flow.
+  - Scenario: An external stock lookup service fails. You use onException with continued(true) to log the error, perhaps set a default stock value (e.g., "unknown"), and then allow the order processing to continue as if the stock lookup was successful but with a fallback value. The main order processing flow is not interrupted.
+
+Let's illustrate continued(true):
+
+```java
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderEnrichmentRoutes extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+
+        // Define an exception handler for HttpOperationFailedException that CONTINUES the route
+        onException(org.apache.camel.http.base.HttpOperationFailedException.class)
+            .handled(true) // Always use handled(true) with continued(true)
+            .continued(true) // The route will continue after this onException block
+            .process(new Processor() {
+                @Override
+                public void process(Exchange exchange) throws Exception {
+                    Exception caused = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                    String failedEndpoint = exchange.getProperty(Exchange.FAILURE_ENDPOINT, String.class);
+                    log.warn("Product enrichment failed for order ${header.orderId} at endpoint: {}. Using fallback data. Error: {}", failedEndpoint, caused.getMessage());
+
+                    // Inject fallback product data into the exchange body or headers
+                    exchange.getIn().setHeader("productName", "Fallback Product Name");
+                    exchange.getIn().setHeader("productPrice", 0.0); // Default to 0, might require manual review
+                    exchange.getIn().setBody("{\"status\": \"ENRICHMENT_FAILED_CONTINUED\", \"orderId\": \""+exchange.getIn().getHeader("orderId")+"\"}");
+                }
+            })
+            .log("Order ${header.orderId} continued after enrichment failure with fallback data.")
+            .end();
+
+        from("direct:enrichOrder")
+            .routeId("enrichOrderRoute")
+            .log("Attempting to enrich order ${header.orderId} with product details.")
+            // Simulate a call to an external product enrichment service
+            // This service might fail (e.g., 404 for unknown product, 500 for service down)
+            .setHeader(Exchange.HTTP_METHOD, constant("GET"))
+            .toD("http://product-service/products/${header.productId}?throwExceptionOnFailure=true") // throwExceptionOnFailure is important
+            .log("Order ${header.orderId} successfully enriched with product data: ${body}")
+            // After successful enrichment or fallback, the route continues here
+            .to("direct:calculateTotalPrice")
+            .end();
+
+        from("direct:calculateTotalPrice")
+            .routeId("calculateTotalPriceRoute")
+            .log("Calculating total price for order ${header.orderId} using potentially enriched data (productName: ${header.productName}, productPrice: ${header.productPrice})")
+            .transform().simple("Order ${header.orderId} processed. Product: ${header.productName}, Price: ${header.productPrice}")
+            .end();
+    }
+}
+```
+
+In this enrichOrder route:
+
+- If the http://product-service call fails with HttpOperationFailedException, the onException block is triggered.
+- It logs a warning, sets fallback productName and productPrice headers, and sets a custom body.
+- Because continued(true) is used, the route then proceeds to direct:calculateTotalPrice, but with the Exchange modified by the onException block (i.e., containing the fallback product data). This allows the order processing to complete, albeit with partial information, perhaps for a manual review later.
 
 #### <a name="chapter4part3.2"></a>Chapter 4 - Part 3.2: Granular Localized Handling with doTry-doCatch-doFinally
 
+While onException provides powerful exception handling at the route or global level, there are scenarios where you need to manage exceptions within a very specific, isolated segment of your route. This is where Camel's doTry-doCatch-doFinally construct comes into play, mirroring the familiar try-catch-finally block from Java. It allows you to wrap a sequence of processing steps, catching exceptions that occur within that block and executing specific recovery logic, and optionally performing cleanup actions regardless of success or failure.
+
+**Structure of doTry-doCatch-doFinally**
+
+The structure is straightforward:
+
+```java
+from("direct:start")
+    .doTry() // Marks the beginning of the try block
+        // ... processing steps that might throw exceptions ...
+    .doCatch(SomeSpecificException.class, AnotherException.class) // Catches specific exceptions
+        // ... error handling logic for caught exceptions ...
+    .doCatch(Exception.class) // Catches any other exceptions
+        // ... general error handling logic ...
+    .doFinally() // Optional: Always executed, regardless of success or failure
+        // ... cleanup or finalization logic ...
+    .endDoTry() // Marks the end of the try-catch-finally block
+    // ... route continues here after the block ...
+```
+
+**doTry() and endDoTry()**
+
+These methods define the scope of the try block. Any processing logic placed between doTry() and endDoTry() is subject to the local exception handling defined by the subsequent doCatch() and doFinally() clauses.
+
+**doCatch()**
+
+Similar to Java's catch block, doCatch() allows you to specify one or more exception types to handle.
+
+- You can have multiple doCatch() blocks, each handling different exception types.
+- Camel will match the most specific doCatch() first.
+- The body of the doCatch() block contains the error handling logic for the caught exceptions.
+- If an exception is caught by a doCatch() block, it is considered handled, and execution typically skips the rest of the doTry block and then proceeds after endDoTry(). The exchange is not redelivered by default within doTry-doCatch.
+- If you want the exception to re-propagate after being caught (e.g., to an outer onException or DLC), you must explicitly throw it again within the doCatch block.
+
+**doFinally()**
+
+This optional block is always executed, regardless of whether an exception occurred within the doTry() block or whether a doCatch() block handled an exception. It's ideal for cleanup operations, resource releases, or logging audit trails that need to happen irrespective of the outcome of the try block.
+
+**Practical Example: E-commerce Order Payment Processing**
+
+Let's imagine a critical part of our order processing system involves interacting with a third-party payment gateway. This operation needs specific error handling and cleanup.
+
+```java
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class PaymentProcessingRoutes extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+
+        // --- Global onException for unhandled issues (e.g., DB errors) ---
+        // This will catch any exceptions not handled by the doTry-doCatch block
+        // or other more specific onException clauses.
+        onException(Exception.class)
+            .maximumRedeliveries(0) // Do not retry for general exceptions here, let DLC handle if configured
+            .handled(true)
+            .process(new Processor() {
+                @Override
+                public void process(Exchange exchange) throws Exception {
+                    Exception caused = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                    log.error("Unhandled exception occurred during order processing: ${body}. Error: {}", caused.getMessage());
+                    exchange.getIn().setBody("{\"status\": \"FAILED_UNKNOWN\", \"error\": \"" + caused.getMessage() + "\"}");
+                }
+            })
+            .to("jms:queue:deadLetterQueue") // Send to a DLC (from previous lesson)
+            .end();
+
+        // --- Payment Processing Route with doTry-doCatch-doFinally ---
+        from("direct:processPayment")
+            .routeId("paymentProcessingRoute")
+            .log("Initiating payment processing for order ${header.orderId}")
+            .setProperty("paymentAttemptStartTime", simple("${date:now:yyyy-MM-dd HH:mm:ss.SSS}")) // Store start time
+
+            .doTry() // Begin try block
+                .log("Attempting to call external payment gateway for order ${header.orderId}")
+                // Simulate calling a payment gateway. This could be an HTTP call.
+                // For demonstration, we'll use a custom processor that might throw exceptions.
+                .process(new Processor() {
+                    @Override
+                    public void process(Exchange exchange) throws Exception {
+                        String orderId = exchange.getIn().getHeader("orderId", String.class);
+                        Double amount = exchange.getIn().getHeader("amount", Double.class);
+
+                        // Simulate various payment gateway failures
+                        if (amount == null || amount <= 0) {
+                            throw new IllegalArgumentException("Invalid payment amount for order: " + orderId);
+                        }
+                        if (orderId.equals("ORDER-003")) { // Simulate a specific fraud detection
+                            throw new PaymentGatewayException("Fraudulent activity detected for order: " + orderId);
+                        }
+                        if (orderId.equals("ORDER-002")) { // Simulate a temporary network issue
+                            throw new java.net.SocketTimeoutException("Payment gateway response timed out for order: " + orderId);
+                        }
+
+                        // Simulate successful payment
+                        exchange.getIn().setBody("{\"paymentStatus\": \"APPROVED\", \"transactionId\": \"TRX-" + System.currentTimeMillis() + "\"}");
+                        log.info("Payment approved for order ${header.orderId}");
+                    }
+                })
+                .log("Payment gateway call successful for order ${header.orderId}")
+                .to("direct:updateOrderPaymentStatus") // Update DB with success
+            .doCatch(IllegalArgumentException.class) // Catch specific invalid input exception
+                .process(new Processor() {
+                    @Override
+                    public void process(Exchange exchange) throws Exception {
+                        Exception caused = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                        String orderId = exchange.getIn().getHeader("orderId", String.class);
+                        log.warn("Invalid payment argument for order ${header.orderId}: {}", caused.getMessage());
+                        exchange.getIn().setBody("{\"status\": \"PAYMENT_FAILED_INVALID_INPUT\", \"orderId\": \""+orderId+"\", \"error\": \""+caused.getMessage()+"\"}");
+                    }
+                })
+                .to("log:paymentInvalidInput?level=ERROR")
+                .to("direct:notifyCustomerInvalidPayment") // Notify customer about invalid input
+            .doCatch(PaymentGatewayException.class) // Catch custom payment gateway specific errors
+                .process(new Processor() {
+                    @Override
+                    public void process(Exchange exchange) throws Exception {
+                        Exception caused = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                        String orderId = exchange.getIn().getHeader("orderId", String.class);
+                        log.error("Payment gateway rejected order ${header.orderId}: {}", caused.getMessage());
+                        exchange.getIn().setBody("{\"status\": \"PAYMENT_FAILED_GATEWAY_REJECTED\", \"orderId\": \""+orderId+"\", \"error\": \""+caused.getMessage()+"\"}");
+                    }
+                })
+                .to("log:paymentGatewayError?level=ERROR")
+                .to("direct:sendToFraudReview") // Send to a manual fraud review queue
+            .doCatch(java.net.SocketTimeoutException.class) // Catch network timeout
+                .process(new Processor() {
+                    @Override
+                    public void process(Exchange exchange) throws Exception {
+                        Exception caused = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                        String orderId = exchange.getIn().getHeader("orderId", String.class);
+                        log.error("Payment gateway network timeout for order ${header.orderId}: {}", caused.getMessage());
+                        exchange.getIn().setBody("{\"status\": \"PAYMENT_FAILED_TIMEOUT\", \"orderId\": \""+orderId+"\", \"error\": \""+caused.getMessage()+"\"}");
+                    }
+                })
+                .to("log:paymentTimeoutError?level=ERROR")
+                .to("direct:retryPaymentLater") // Schedule a retry for later
+            .doFinally() // Always execute this block
+                .log("Payment attempt for order ${header.orderId} finished. Started at ${exchangeProperty.paymentAttemptStartTime}")
+                // In a real scenario, this might release resources or update audit logs regardless of outcome
+                .process(new Processor() {
+                    @Override
+                    public void process(Exchange exchange) throws Exception {
+                        // Audit log payment attempt
+                        String orderId = exchange.getIn().getHeader("orderId", String.class);
+                        String status = exchange.getIn().getBody(String.class); // Get the final status
+                        log.info("AUDIT: Payment transaction for order {} completed with status: {}", orderId, status);
+                    }
+                })
+            .endDoTry() // End of try-catch-finally block
+            .log("Finished payment processing block for order ${header.orderId}. Current body: ${body}")
+            // The route continues here with the exchange (potentially modified by doCatch)
+            .to("direct:postPaymentProcessing")
+            .end();
+
+        // Mock endpoints for different recovery paths
+        from("direct:updateOrderPaymentStatus").log("Order ${header.orderId}: Payment status updated to APPROVED. Proceeding to fulfillment.");
+        from("direct:notifyCustomerInvalidPayment").log("Order ${header.orderId}: Customer notified about invalid payment input.");
+        from("direct:sendToFraudReview").log("Order ${header.orderId}: Sent to fraud review queue.");
+        from("direct:retryPaymentLater").log("Order ${header.orderId}: Payment scheduled for retry later.");
+        from("direct:postPaymentProcessing").log("Order ${header.orderId}: Continuing with post-payment processing.");
+    }
+}
+
+// Custom exception for payment gateway specific errors
+class PaymentGatewayException extends RuntimeException {
+    public PaymentGatewayException(String message) {
+        super(message);
+    }
+}
+```
+
+In this comprehensive example:
+
+- An onException(Exception.class) is defined globally, acting as a fallback for any unhandled exceptions outside the doTry-doCatch block.
+- The direct:processPayment route uses doTry-doCatch-doFinally to wrap the process step that simulates a payment gateway call.
+- Inside the doTry block, a custom Processor is used to programmatically throw different exceptions based on order ID or amount, simulating various failure conditions (invalid input, fraud detection, network timeout).
+- Multiple doCatch blocks are defined to handle specific exceptions:
+  - IllegalArgumentException: For invalid payment amounts. The route then sends a notification.
+  - PaymentGatewayException: For specific issues reported by the gateway (e.g., fraud). This sends the order to a fraud review queue.
+  - java.net.SocketTimeoutException: For network issues, scheduling a retry.
+- Each doCatch block performs specific actions: logging, setting a custom response body indicating the failure reason, and routing the exchange to a dedicated recovery endpoint. Crucially, after a doCatch block executes, the exchange proceeds after endDoTry().
+- The doFinally block is always executed, logging an audit message regardless of whether the payment succeeded, failed, or timed out.
+- After endDoTry(), the route continues with direct:postPaymentProcessing. This means that even if a doCatch block was executed, the route won't stop; it will proceed to the next step, but with the Exchange modified by the doCatch logic.
+
+**Interaction Between onException and doTry-doCatch**
+
+It's important to understand how these two mechanisms interact:
+
+- Prioritization: If an exception occurs within a doTry block, Camel first attempts to find a matching doCatch clause within that doTry-doCatch-doFinally block.
+- doCatch Takes Precedence Locally: If a doCatch clause explicitly handles the exception type, that doCatch block will execute. The exception is considered handled locally by the doCatch.
+- Propagation if not caught by doCatch: If no doCatch clause within the doTry block matches the exception type, the exception will then propagate outside the doTry-doCatch-doFinally block. At this point, Camel will look for a matching onException clause (first at the route level, then globally).
+- onException as Fallback/Outer Handler: An onException clause can act as an outer handler for exceptions that doCatch blocks either explicitly don't handle or allow to re-throw.
+
+This hierarchical approach allows for extreme flexibility:
+
+- Use doTry-doCatch-doFinally for highly localized, immediate recovery actions or cleanup.
+- Use onException at the route level for broader, route-specific error conditions that might require redeliveries or specific logging strategies for the entire route.
+- Use onException at the CamelContext level as a general safety net for any exceptions not caught by more specific handlers, potentially forwarding them to a Dead Letter Channel.
+
 #### <a name="chapter4part4"></a>Chapter 4 - Part 4: Transaction Management with Camel and Spring for atomicity
+
+In enterprise integration, ensuring data consistency and reliability is paramount. When a business process involves multiple steps, especially those interacting with various data stores or external systems, failures at any point can lead to an inconsistent state. Transaction management provides a robust mechanism to guarantee that a series of operations are treated as a single, indivisible unit of work, known as an atomic transaction. This means either all operations within the transaction succeed, or if any one fails, all operations are rolled back to their original state, as if they never happened. Apache Camel, when combined with Spring's powerful transaction management capabilities, offers a highly effective way to implement atomicity in complex integration routes, preventing partial updates and maintaining data integrity in systems like our E-commerce Order Processing case study.
 
 #### <a name="chapter4part4.1"></a>Chapter 4 - Part 4.1: Understanding Transactions and Atomicity
 
+At its core, a transaction is a sequence of operations performed as a single logical unit. To ensure reliability, transactions typically adhere to the ACID properties: Atomicity, Consistency, Isolation, and Durability. For the purpose of this lesson, we will primarily focus on Atomicity.
+
+Atomicity guarantees that either all operations within a transaction complete successfully, or none of them do. There is no half-completed state. If an error occurs at any point during the transaction, all changes made up to that point are undone (rolled back). If all operations succeed, the changes are made permanent (committed).
+
+Imagine processing an order in our E-commerce system:
+
+- **Debit customer's account**: Reduce the balance.
+- **Credit merchant's account**: Increase the balance.
+- **Update inventory**: Decrease the stock level for the purchased items.
+
+If step 1 succeeds, but step 2 fails due to a network error, without atomicity, the customer might be debited, but the merchant not credited, leading to an inconsistent financial state. With atomicity, if step 2 fails, the debit from step 1 is automatically reversed, and the system returns to its original consistent state.
+
+**Why Atomicity is Crucial in Integration**
+
+Integration routes often involve multiple systems and resources (databases, message queues, external APIs). Ensuring atomicity across these interactions is vital for several reasons:
+
+- **Data Consistency**: Prevents data from being in an invalid or partially updated state. For example, an order might be recorded as paid, but the inventory might not be updated, leading to overselling.
+- **Business Logic Integrity**: Ensures that complex business processes complete entirely or not at all, adhering to business rules. If an order cannot be fully processed (e.g., due to insufficient stock), no part of the order should be recorded as successful.
+- **Error Recovery**: Simplifies error handling by providing a clear mechanism to revert to a known good state upon failure, making retry strategies more predictable.
+
+**Local vs. Global Transactions**
+
+- **Local Transactions**: These transactions are managed by a single resource manager (e.g., a single database connection or a single JMS queue manager). They are simpler to implement but are confined to a single resource. Most of our examples will use local transactions, often targeting a single database.
+- **Global Transactions (XA Transactions)**: These transactions coordinate operations across multiple, distinct resource managers (e.g., updates to two different databases, or a database update and a JMS message send). They require a Transaction Manager that can coordinate the two-phase commit (2PC) protocol. While powerful, they add significant complexity and overhead. Spring and Camel can support XA transactions, but it typically involves more advanced setup with JTA (Java Transaction API) and an XA-capable transaction manager (like Atomikos or Narayana). For this lesson, we'll focus on the more common scenario of local transactions managed by Spring's PlatformTransactionManager.
+
 #### <a name="chapter4part4.2"></a>Chapter 4 - Part 4.2: Spring's Transaction Management Foundation
+
+Spring Framework provides a comprehensive and flexible abstraction for transaction management, largely independent of the underlying transaction technology (JDBC, JPA, JMS, JTA). This abstraction is built around the PlatformTransactionManager interface.
+
+**PlatformTransactionManager**
+
+This is the central interface in Spring's transaction infrastructure. Different implementations exist for different transaction technologies:
+
+- DataSourceTransactionManager: For JDBC-based operations, managing transactions on a single DataSource. This is what we'll primarily use for our database examples.
+- JpaTransactionManager: For JPA (Java Persistence API) operations.
+- JmsTransactionManager: For JMS (Java Message Service) operations.
+- JtaTransactionManager: For global (XA) transactions, delegating to a JTA provider.
+
+Spring Boot typically auto-configures a DataSourceTransactionManager if you have a DataSource bean and JDBC dependencies on your classpath, simplifying setup significantly.
+
+**Declarative Transaction Management with @Transactional**
+
+The most common and recommended way to manage transactions in Spring applications is declaratively, using the @Transactional annotation. You can apply this annotation to classes or methods within your Spring beans.
+
+When a method annotated with @Transactional is called, Spring's AOP (Aspect-Oriented Programming) proxy intercepts the call:
+
+- It begins a transaction before the method executes.
+- If the method completes successfully, it commits the transaction.
+- If the method throws an unchecked exception (e.g., RuntimeException) or an explicitly configured checked exception, it rolls back the transaction.
+
+```java
+// Example: A Spring service that manages order persistence
+@Service
+public class OrderService {
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Transactional // All operations within this method will be part of a single transaction
+    public void createOrderAndAllocateInventory(Order order) {
+        // 1. Insert order into 'orders' table
+        String insertOrderSql = "INSERT INTO orders (order_id, customer_id, order_date, total_amount) VALUES (?, ?, ?, ?)";
+        jdbcTemplate.update(insertOrderSql, order.getOrderId(), order.getCustomerId(), new Date(), order.getTotalAmount());
+        System.out.println("Order " + order.getOrderId() + " inserted.");
+
+        // 2. Insert order items into 'order_items' table
+        for (OrderItem item : order.getItems()) {
+            String insertItemSql = "INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)";
+            jdbcTemplate.update(insertItemSql, order.getOrderId(), item.getProductId(), item.getQuantity(), item.getPrice());
+            System.out.println("Item " + item.getProductId() + " for order " + order.getOrderId() + " inserted.");
+        }
+
+        // 3. Update inventory for each item
+        for (OrderItem item : order.getItems()) {
+            String updateInventorySql = "UPDATE inventory SET stock_level = stock_level - ? WHERE product_id = ?";
+            int rowsAffected = jdbcTemplate.update(updateInventorySql, item.getQuantity(), item.getProductId());
+            if (rowsAffected == 0) {
+                // Simulate an inventory shortage - this will cause a rollback
+                throw new RuntimeException("Insufficient stock for product " + item.getProductId());
+            }
+            System.out.println("Inventory updated for product " + item.getProductId() + ", quantity " + item.getQuantity() + ".");
+        }
+
+        // If any of the above operations fail with a RuntimeException,
+        // the entire method's changes will be rolled back by Spring's @Transactional.
+    }
+}
+```
+
+In this OrderService, if the updateInventorySql fails (e.g., rowsAffected is 0 due to no stock), the RuntimeException will trigger Spring's transaction manager to roll back both the order and order item insertions, ensuring atomicity.
+
+**Transaction Propagation and Isolation Levels**
+
+While @Transactional makes managing transactions easy, it's important to understand how transactions behave in nested method calls (propagation) and how concurrent transactions interact (isolation).
+
+- **Propagation**: This defines how a transactional method behaves when called from another transactional context. Common propagation levels include:
+  - **REQUIRED (default)**: If a transaction already exists, the method joins it. Otherwise, a new one is created.
+  - **REQUIRES_NEW**: Always starts a new, independent transaction. If an existing transaction is present, it's suspended.
+  - **NESTED**: Creates a savepoint within the existing transaction. Allows partial rollbacks within a larger transaction.
+- **Isolation Levels**: These define how changes made by one transaction are visible to other concurrent transactions. Higher isolation levels reduce concurrency issues (like dirty reads, non-repeatable reads, phantom reads) but can decrease performance. Common levels include:
+  - **READ_UNCOMMITTED**: Lowest isolation. Transactions can see uncommitted changes from others (dirty reads possible).
+  - **READ_COMMITTED (most common default)**: Transactions only see committed changes from others.
+  - **REPEATABLE_READ**: Guarantees that if a transaction reads a row multiple times, it will always get the same data.
+  - **SERIALIZABLE**: Highest isolation. Transactions execute serially, preventing all concurrency issues but often impacting performance significantly.
+ 
+For most integration scenarios, REQUIRED propagation with READ_COMMITTED isolation is a good starting point, providing a balance between consistency and performance. You can specify these using @Transactional(propagation = Propagation.REQUIRED, isolation = Isolation.READ_COMMITTED).
 
 #### <a name="chapter4part4.3"></a>Chapter 4 - Part 4.3: Camel Transaction Support
 
+Apache Camel seamlessly integrates with Spring's transaction management via its transacted() EIP and its TransactionErrorHandler. This allows you to define transaction boundaries directly within your Camel routes, leveraging the power of Spring's PlatformTransactionManager configured in your application.
+
+**The transacted() EIP**
+
+The transacted() EIP in Camel is specifically designed to work with Spring's transaction management. When you apply transacted() to a route or a part of a route, Camel will:
+
+- Obtain a transaction from the configured PlatformTransactionManager (typically DataSourceTransactionManager in a Spring Boot application).
+- Execute the subsequent route steps within that transaction.
+- If all steps complete successfully, commit the transaction.
+- If any exception occurs within the transacted block, roll back the transaction.
+
+```java
+// Basic structure of a transacted route in Camel
+from("direct:startTransactedProcess")
+    .transacted() // Marks the start of a transaction for the subsequent route
+    .to("bean:myService?method=doFirstTransactedOperation")
+    .to("bean:anotherService?method=doSecondTransactedOperation")
+    .process(exchange -> {
+        // Some custom logic, if it throws an exception, the transaction rolls back
+        if (someConditionFails) {
+            throw new Exception("Simulating a business rule violation.");
+        }
+    })
+    .to("bean:finalService?method=doFinalTransactedOperation");
+    // If any step after .transacted() fails, the entire transaction will be rolled back.
+```
+
+**Transaction Boundaries in Camel Routes**
+
+It's crucial to understand where a transaction begins and ends when using transacted(). The transacted() EIP applies to the entire current scope of the route definition after the transacted() call. This means all subsequent steps until the route ends or another transactional boundary is explicitly defined.
+
+Consider a route:
+
+```java
+from("direct:incomingOrders")
+    .to("bean:preProcessor") // Step 1: NOT part of the transaction
+    .transacted()
+    .to("bean:dbPersister")  // Step 2: PART of the transaction
+    .to("bean:inventoryUpdater") // Step 3: PART of the transaction
+    .end() // Transaction ends here
+    .to("bean:notificationSender"); // Step 4: NOT part of the transaction
+```
+
+In this example:
+
+- If dbPersister or inventoryUpdater fails, the transaction started by transacted() will roll back, undoing any changes made by these two beans. The preProcessor operation, if it modified any transactional resource, would not be rolled back because it occurred before the transacted() block.
+- The notificationSender operation will only be executed if the transaction commits successfully. If the transaction rolls back, notificationSender will not be called.
+
+This highlights the importance of carefully placing transacted() to encompass all operations that need to be atomic.
+
+**TransactionErrorHandler**
+
+When transacted() is used, Camel automatically sets up a TransactionErrorHandler for that route. This error handler is responsible for:
+
+- Marking the current transaction for rollback if an exception occurs within the transacted() block.
+- Allowing the PlatformTransactionManager to perform the actual rollback when the exception propagates out of the transacted() scope.
+- Ensuring that the route exchange is correctly handled after a rollback (e.g., possibly moving to a Dead Letter Channel if configured outside the transacted scope for post-rollback error handling).
+
+It's important to differentiate TransactionErrorHandler from other error handlers like DeadLetterChannel or onException.
+
+- transacted() and TransactionErrorHandler are primarily concerned with the atomicity of a transactional resource (e.g., a database). Their goal is to ensure the transaction either commits or rolls back.
+- DeadLetterChannel and onException are about handling the message/exchange flow itself after an error. They can be used in conjunction with transactions, but usually for errors that occur outside the transactional boundary or after a transaction has definitively failed and rolled back.
+
+For instance, you might have a transacted() route that saves an order. If it fails, the transaction rolls back. After the rollback, you might want to send the original message to a DeadLetterChannel for manual inspection. This DeadLetterChannel would be configured outside the transacted() scope.
+
+```java
+// Example combining transacted with dead letter channel
+errorHandler(deadLetterChannel("jms:DLQ").maximumRedeliveries(0)); // Configure DLT globally or for route
+
+from("direct:processOrderAtomic")
+    .transacted() // This part is transactional
+    .to("bean:orderDao?method=saveOrder")
+    .to("bean:inventoryService?method=deductStock")
+    .end() // Transaction boundary ends
+    .to("bean:emailService?method=sendConfirmation"); // This is outside the transaction.
+                                                    // If the transaction rolls back, this won't execute.
+                                                    // The exchange will then be handled by the error handler (DLQ).
+```
+
 #### <a name="chapter4part4.4"></a>Chapter 4 - Part 4.4: Practical Implementation with Camel and Spring Boot
+
+Let's integrate transaction management into our "E-commerce Order Processing" case study. We'll create a route that receives new orders, persists the order and its items to a database, and attempts to update inventory. All these database operations must be atomic. If any step fails, the entire operation should roll back.
+
+We'll use an in-memory H2 database for simplicity, but the principles apply directly to external databases like PostgreSQL or MySQL.
+
+**1. Project Setup**
+
+Add the necessary dependencies to your pom.xml:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version> <!-- Use a recent Spring Boot version -->
+        <relativePath/>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>camel-transaction-demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>camel-transaction-demo</name>
+    <description>Demo project for Camel and Spring Transaction Management</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <camel.version>4.4.0</camel.version> <!-- Use a recent Camel version -->
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel.springboot</groupId>
+            <artifactId>camel-spring-boot-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-sql</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-test-spring-junit5</artifactId>
+            <version>${camel.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+**2. Database Schema and Spring Boot Configuration**
+
+We'll define a simple schema for orders, order_items, and inventory.
+
+**src/main/resources/schema.sql:**
+
+```sql
+CREATE TABLE IF NOT EXISTS orders (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id VARCHAR(255) NOT NULL UNIQUE,
+    customer_id VARCHAR(255) NOT NULL,
+    order_date TIMESTAMP NOT NULL,
+    total_amount DECIMAL(10, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS order_items (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id VARCHAR(255) NOT NULL,
+    product_id VARCHAR(255) NOT NULL,
+    quantity INT NOT NULL,
+    price DECIMAL(10, 2) NOT NULL,
+    FOREIGN KEY (order_id) REFERENCES orders(order_id)
+);
+
+CREATE TABLE IF NOT EXISTS inventory (
+    product_id VARCHAR(255) PRIMARY KEY,
+    stock_level INT NOT NULL
+);
+
+-- Initial inventory data
+INSERT INTO inventory (product_id, stock_level) VALUES ('PROD001', 100) ON CONFLICT (product_id) DO UPDATE SET stock_level = 100;
+INSERT INTO inventory (product_id, stock_level) VALUES ('PROD002', 50) ON CONFLICT (product_id) DO UPDATE SET stock_level = 50;
+INSERT INTO inventory (product_id, stock_level) VALUES ('PROD003', 10) ON CONFLICT (product_id) DO UPDATE SET stock_level = 10;
+```
+
+**src/main/resources/application.properties:**
+
+```
+spring.datasource.url=jdbc:h2:mem:orderdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+spring.datasource.driverClassName=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=password
+spring.sql.init.mode=always # Ensure schema.sql runs on startup
+logging.level.org.apache.camel=INFO
+logging.level.org.springframework.jdbc=DEBUG # To see transaction logs
+```
+
+Spring Boot will automatically detect the DataSource and DataSourceTransactionManager beans from these properties and the spring-boot-starter-jdbc dependency.
+
+**3. Data Transfer Objects (DTOs)**
+
+Represent our Order and OrderItem structures.
+
+**src/main/java/com/example/cameltransactiondemo/model/Order.java:**
+
+```java
+package com.example.cameltransactiondemo.model;
+
+import java.math.BigDecimal;
+import java.util.Date;
+import java.util.List;
+import java.util.UUID;
+
+public class Order {
+    private String orderId;
+    private String customerId;
+    private Date orderDate;
+    private BigDecimal totalAmount;
+    private List<OrderItem> items;
+
+    public Order() {
+        this.orderId = UUID.randomUUID().toString(); // Generate unique ID
+        this.orderDate = new Date();
+    }
+
+    public Order(String customerId, List<OrderItem> items) {
+        this();
+        this.customerId = customerId;
+        this.items = items;
+        this.totalAmount = items.stream()
+                                .map(item -> item.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())))
+                                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    // Getters and Setters
+    public String getOrderId() { return orderId; }
+    public void setOrderId(String orderId) { this.orderId = orderId; }
+    public String getCustomerId() { return customerId; }
+    public void setCustomerId(String customerId) { this.customerId = customerId; }
+    public Date getOrderDate() { return orderDate; }
+    public void setOrderDate(Date orderDate) { this.orderDate = orderDate; }
+    public BigDecimal getTotalAmount() { return totalAmount; }
+    public void setTotalAmount(BigDecimal totalAmount) { this.totalAmount = totalAmount; }
+    public List<OrderItem> getItems() { return items; }
+    public void setItems(List<OrderItem> items) { this.items = items; }
+
+    @Override
+    public String toString() {
+        return "Order{" +
+               "orderId='" + orderId + '\'' +
+               ", customerId='" + customerId + '\'' +
+               ", totalAmount=" + totalAmount +
+               ", items=" + items +
+               '}';
+    }
+}
+```
+
+**src/main/java/com/example/cameltransactiondemo/model/OrderItem.java:**
+
+```java
+package com.example.cameltransactiondemo.model;
+
+import java.math.BigDecimal;
+
+public class OrderItem {
+    private String productId;
+    private int quantity;
+    private BigDecimal price;
+
+    public OrderItem() {}
+
+    public OrderItem(String productId, int quantity, BigDecimal price) {
+        this.productId = productId;
+        this.quantity = quantity;
+        this.price = price;
+    }
+
+    // Getters and Setters
+    public String getProductId() { return productId; }
+    public void setProductId(String productId) { this.productId = productId; }
+    public int getQuantity() { return quantity; }
+    public void setQuantity(int quantity) { this.quantity = quantity; }
+    public BigDecimal getPrice() { return price; }
+    public void setPrice(BigDecimal price) { this.price = price; }
+
+    @Override
+    public String toString() {
+        return "OrderItem{" +
+               "productId='" + productId + '\'' +
+               ", quantity=" + quantity +
+               ", price=" + price +
+               '}';
+    }
+}
+```
+
+**4. Spring Service with @Transactional**
+
+While Camel's transacted() EIP handles route-level transactions, it's often good practice to encapsulate complex business logic that requires atomicity into a dedicated Spring service, annotated with @Transactional. This promotes separation of concerns and reusability.
+
+**src/main/java/com/example/cameltransactiondemo/service/OrderProcessingService.java:**
+
+```java
+package com.example.cameltransactiondemo.service;
+
+import com.example.cameltransactiondemo.model.Order;
+import com.example.cameltransactiondemo.model.OrderItem;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Date;
+
+@Service
+public class OrderProcessingService {
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    /**
+     * Creates an order, inserts its items, and deducts inventory, all atomically.
+     * If any step fails (e.g., insufficient stock), the entire operation rolls back.
+     *
+     * @param order The order to process.
+     */
+    @Transactional // This annotation ensures atomicity for all operations within this method
+    public void processOrderAtomically(Order order) {
+        System.out.println("Processing order " + order.getOrderId() + " atomically...");
+
+        // 1. Insert into 'orders' table
+        String insertOrderSql = "INSERT INTO orders (order_id, customer_id, order_date, total_amount) VALUES (?, ?, ?, ?)";
+        jdbcTemplate.update(insertOrderSql, order.getOrderId(), order.getCustomerId(), order.getOrderDate(), order.getTotalAmount());
+        System.out.println("  Order " + order.getOrderId() + " inserted into 'orders'.");
+
+        // 2. Insert into 'order_items' table for each item
+        for (OrderItem item : order.getItems()) {
+            String insertItemSql = "INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)";
+            jdbcTemplate.update(insertItemSql, order.getOrderId(), item.getProductId(), item.getQuantity(), item.getPrice());
+            System.out.println("  Item " + item.getProductId() + " for order " + order.getOrderId() + " inserted into 'order_items'.");
+        }
+
+        // 3. Update 'inventory' for each item
+        for (OrderItem item : order.getItems()) {
+            String updateInventorySql = "UPDATE inventory SET stock_level = stock_level - ? WHERE product_id = ? AND stock_level >= ?";
+            int rowsAffected = jdbcTemplate.update(updateInventorySql, item.getQuantity(), item.getProductId(), item.getQuantity());
+            if (rowsAffected == 0) {
+                // If no rows were updated, it means stock was insufficient or product_id didn't exist.
+                // Throw a RuntimeException to trigger a rollback of the entire transaction.
+                System.err.println("  INSUFFICIENT STOCK or INVALID PRODUCT for product " + item.getProductId() + ". Rolling back!");
+                throw new RuntimeException("Insufficient stock or invalid product for product " + item.getProductId());
+            }
+            System.out.println("  Inventory updated for product " + item.getProductId() + ", quantity " + item.getQuantity() + ".");
+        }
+
+        System.out.println("Order " + order.getOrderId() + " processed successfully and committed.");
+    }
+
+    // Helper method to get current stock for demonstration
+    public int getCurrentStock(String productId) {
+        try {
+            return jdbcTemplate.queryForObject("SELECT stock_level FROM inventory WHERE product_id = ?", Integer.class, productId);
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
+            return -1; // Product not found
+        }
+    }
+}
+```
+
+**5. Camel Route with transacted()**
+
+Now, let's define a Camel route that uses the transacted() EIP to ensure atomicity. We will also demonstrate how to call the @Transactional Spring service from within a Camel route.
+
+**src/main/java/com/example/cameltransactiondemo/route/OrderRoute.java:**
+
+```java
+package com.example.cameltransactiondemo.route;
+
+import com.example.cameltransactiondemo.model.Order;
+import com.example.cameltransactiondemo.service.OrderProcessingService;
+import org.apache.camel.LoggingLevel;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderRoute extends RouteBuilder {
+
+    @Autowired
+    private OrderProcessingService orderProcessingService; // Our @Transactional Spring service
+
+    @Override
+    public void configure() throws Exception {
+        // Configure a general error handler for the route for messages that *leave* the transactional scope
+        // We set max redeliveries to 0 because after a rollback, we typically don't want to retry the
+        // *transactional* part immediately unless we implement more sophisticated logic.
+        // Instead, the message could go to a Dead Letter Channel for manual inspection.
+        errorHandler(deadLetterChannel("log:DLQ?level=ERROR")
+            .maximumRedeliveries(0)
+            .redeliveryDelay(0)
+            .logStackTrace(true)
+            .useOriginalMessage()); // Preserve the original message
+
+        // Route to process incoming orders atomically
+        from("direct:processOrder")
+            .routeId("OrderProcessingRoute")
+            .log(LoggingLevel.INFO, "Received order for atomic processing: ${body.orderId}")
+            .transacted() // Mark the start of a transaction here
+            .bean(orderProcessingService, "processOrderAtomically") // Call our @Transactional Spring service
+            .log(LoggingLevel.INFO, "Order ${body.orderId} processed and committed successfully.")
+            .to("direct:orderProcessedNotifier"); // Further processing *after* successful commit
+
+        // A separate route for actions *after* the order is successfully processed
+        from("direct:orderProcessedNotifier")
+            .log(LoggingLevel.INFO, "Sending order confirmation for order ${body.orderId} (non-transactional).")
+            .to("mock:orderConfirmation"); // Simulate sending confirmation (e.g., email, SMS)
+    }
+}
+```
+
+**6. Main Application Class and Test Driver**
+
+**src/main/java/com/example/cameltransactiondemo/CamelTransactionDemoApplication.java:**
+
+```java
+package com.example.cameltransactiondemo;
+
+import com.example.cameltransactiondemo.model.Order;
+import com.example.cameltransactiondemo.model.OrderItem;
+import com.example.cameltransactiondemo.service.OrderProcessingService;
+import org.apache.camel.ProducerTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+
+import java.math.BigDecimal;
+import java.util.Arrays;
+import java.util.List;
+
+@SpringBootApplication
+public class CamelTransactionDemoApplication {
+
+    @Autowired
+    private OrderProcessingService orderProcessingService; // To check stock levels
+
+    public static void main(String[] args) {
+        SpringApplication.run(CamelTransactionDemoApplication.class, args);
+    }
+
+    @Bean
+    CommandLineRunner runner(ProducerTemplate producerTemplate) {
+        return args -> {
+            System.out.println("--- Starting transaction demo ---");
+
+            // --- Scenario 1: Successful Order ---
+            System.out.println("\n--- Scenario 1: Processing a successful order ---");
+            List<OrderItem> successItems = Arrays.asList(
+                new OrderItem("PROD001", 1, BigDecimal.valueOf(10.00)),
+                new OrderItem("PROD002", 2, BigDecimal.valueOf(5.00))
+            );
+            Order successOrder = new Order("CUST001", successItems);
+
+            System.out.println("Initial stock for PROD001: " + orderProcessingService.getCurrentStock("PROD001"));
+            System.out.println("Initial stock for PROD002: " + orderProcessingService.getCurrentStock("PROD002"));
+
+            producerTemplate.sendBody("direct:processOrder", successOrder);
+
+            System.out.println("Final stock for PROD001: " + orderProcessingService.getCurrentStock("PROD001"));
+            System.out.println("Final stock for PROD002: " + orderProcessingService.getCurrentStock("PROD002"));
+            System.out.println("Check database for 'orders' and 'order_items' tables.");
+
+            // --- Scenario 2: Failed Order (Insufficient Stock) ---
+            System.out.println("\n--- Scenario 2: Processing a failed order (insufficient stock) ---");
+            List<OrderItem> failureItems = Arrays.asList(
+                new OrderItem("PROD001", 5, BigDecimal.valueOf(10.00)),
+                new OrderItem("PROD003", 50, BigDecimal.valueOf(20.00)) // PROD003 only has 10 stock
+            );
+            Order failureOrder = new Order("CUST002", failureItems);
+
+            System.out.println("Initial stock for PROD001: " + orderProcessingService.getCurrentStock("PROD001"));
+            System.out.println("Initial stock for PROD003: " + orderProcessingService.getCurrentStock("PROD003"));
+
+            producerTemplate.sendBody("direct:processOrder", failureOrder); // This will trigger a rollback
+
+            System.out.println("Final stock for PROD001: " + orderProcessingService.getCurrentStock("PROD001"));
+            System.out.println("Final stock for PROD003: " + orderProcessingService.getCurrentStock("PROD003"));
+            System.out.println("Check database again: 'orders' and 'order_items' should NOT contain CUST002's order.");
+
+            System.out.println("\n--- Transaction demo finished ---");
+        };
+    }
+}
+```
+
+When you run CamelTransactionDemoApplication, you'll observe:
+
+- Scenario 1 (Success): The order for CUST001 will be fully inserted into orders and order_items, and the inventory for PROD001 and PROD002 will be correctly reduced. The orderProcessedNotifier route will also be triggered.
+- Scenario 2 (Failure): The order for CUST002 will fail during inventory update because PROD003 has insufficient stock. Because the processOrderAtomically method is @Transactional and called from a transacted() Camel route, the entire operation (including the insertion of the order and its items for CUST002) will be rolled back. The database will show no trace of CUST002's order, and the inventory levels will remain unchanged from before the attempt. The orderProcessedNotifier will not be triggered. An error message will appear in the logs (due to the deadLetterChannel configuration for the route).
+
+This demonstrates the power of atomicity: if one part of a multi-step operation fails, all previous changes within that transaction are undone, ensuring data consistency.
 
 #### <a name="chapter4part5"></a>Chapter 4 - Part 5: Unit Testing Camel Routes with `camel-test-spring-junit5`
 
+Unit testing is a critical practice in software development that ensures individual components of an application function correctly and reliably. In the context of Enterprise Integration Patterns (EIPs) and Apache Camel, this means verifying that your integration routes behave as expected, process messages correctly, transform data accurately, and handle errors gracefully. Given that Apache Camel applications often interact with numerous external systems and involve complex routing logic, isolating and testing routes in a controlled environment is paramount. This lesson will equip you with the knowledge and tools to effectively unit test your Camel routes within Spring Boot applications using camel-test-spring-junit5, a powerful framework that streamlines the testing process by leveraging JUnit 5 and Spring Boot's testing infrastructure. By focusing on unit tests, we can quickly identify and fix issues in our routing logic without requiring actual external system dependencies, thereby accelerating development and improving code quality.
+
 #### <a name="chapter4part5.1"></a>Chapter 4 - Part 5.1: Understanding camel-test-spring-junit5
+
+camel-test-spring-junit5 is a testing utility provided by Apache Camel that integrates seamlessly with JUnit 5 and Spring Boot's testing framework. It provides a specialized test context that automatically starts a Camel SpringManagedMain or CamelContext within a Spring Boot application context, allowing you to test your Camel routes as Spring Beans. This approach ensures that your test environment closely mimics your production environment, but with the added flexibility to mock external endpoints and control message flow for isolated testing.
+
+The core idea is to test your Camel routes in isolation from actual external systems like databases, message queues, or external APIs. Instead, you'll replace these external endpoints with mock implementations or intercept messages flowing through the route to verify their content and behavior.
+
+**Key Annotations and Utilities**
+
+camel-test-spring-junit5 introduces several key annotations and utilities that simplify writing unit tests for your Camel routes:
+
+- **@CamelSpringBootTest**: This is the primary annotation that marks a test class as a Camel Spring Boot test. It extends Spring Boot's @SpringBootTest and sets up the necessary Camel context for testing. It ensures that your Spring Boot application context, including your Camel routes defined as Spring Beans, is properly initialized for testing.
+  - **Example Use Case**: A test class needs to load all Spring Boot configurations and Camel routes to test their behavior.
+  - **Code Example**:
+ 
+```java
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+
+@CamelSpringBootTest
+@SpringBootTest // Inherited by @CamelSpringBootTest, but good practice to include for clarity
+class MyOrderProcessingRouteTest {
+
+    @Test
+    void contextLoads() {
+        // Simply verifies that the Spring Boot and Camel contexts load successfully
+        // without errors. This is a basic sanity check.
+    }
+}
+```
+
+  - **Explanation**: By annotating MyOrderProcessingRouteTest with @CamelSpringBootTest (which implicitly includes @SpringBootTest), we instruct JUnit 5 and Spring Boot to start our application context. This means any @Component, @Service, or @Configuration classes, including our Camel routes, will be instantiated and ready for testing.
+
+- **@MockEndpointsAndSkip**: This powerful annotation automatically replaces all external endpoints in your routes with mock: endpoints. It also skips the original endpoint URI, meaning messages will not be sent to the actual external system. This is invaluable for isolating your route logic from external dependencies. You can specify a wildcard pattern (e.g., *, file:*, jms:queue:orders) to mock specific types of endpoints or all endpoints.
+  - **Example Use Case**: You have a route that sends messages to a JMS queue and writes to a file. You want to test the routing logic before these external calls.
+  - **Code Example**:
+ 
+```java
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.apache.camel.test.spring.junit5.MockEndpointsAndSkip;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+
+@CamelSpringBootTest
+@SpringBootTest
+@MockEndpointsAndSkip("jms:*") // Mocks all JMS endpoints and skips their original URIs
+class OrderValidationRouteTest {
+    // Test methods here will have JMS endpoints mocked automatically
+}
+```
+
+  - **Explanation**: In this example, any endpoint starting with jms: (e.g., jms:queue:newOrders, jms:topic:notifications) will be replaced by a mock:jms:queue:newOrders or mock:jms:topic:notifications endpoint. This allows you to assert what messages would have been sent to JMS without actually interacting with an ActiveMQ broker.
+
+- **@MockEndpoints**: Similar to @MockEndpointsAndSkip, but instead of skipping the original endpoint, it sends a copy of the message to a mock: endpoint in addition to sending it to the original endpoint. This is useful when you want to observe what's being sent to an actual endpoint without preventing the message from continuing its original flow. It's less common for pure unit testing where strict isolation is desired.
+  - **Example Use Case**: You want to monitor messages sent to a logging endpoint while still allowing the log to be written (if it's a lightweight, non-critical external dependency).
+  - **Code Example (less common for strict unit tests)**:
+ 
+```java
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.apache.camel.test.spring.junit5.MockEndpoints;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+
+@CamelSpringBootTest
+@SpringBootTest
+@MockEndpoints("log:*") // Mocks all log endpoints, sending copies to mock:log endpoints
+class MyLoggingRouteTest {
+    // This would allow testing that log messages are generated correctly
+    // while still allowing them to be processed by the actual log component if desired.
+}
+```
+
+  - **Explanation**: If your route has to("log:myLogger"), using @MockEndpoints("log:*") would mean the message goes to both mock:log:myLogger and log:myLogger. This isn't ideal for isolating external systems, but can be useful for certain observation scenarios.
+
+- **@UseAdviceWith**: This annotation is crucial for dynamically modifying routes during testing. When enabled, Camel's AdviceWithRouteBuilder can be used to "advise" a route, meaning you can intercept, replace, or modify parts of the route definition at runtime before the test runs. This enables highly focused testing of specific segments of a complex route. It must be used in conjunction with CamelContext#start() and CamelContext#stop() around the adviceWith block.
+  - **Example Use Case**: You want to test an onException block that activates when a specific external service call fails. Instead of actually failing the service, you advise the route to throw an exception at that point.
+  - **Code Example**:
+ 
+```java
+import org.apache.camel.CamelContext;
+import org.apache.camel.builder.AdviceWith;
+import org.apache.camel.builder.AdviceWithRouteBuilder;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.apache.camel.test.spring.junit5.UseAdviceWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+
+@CamelSpringBootTest
+@SpringBootTest
+@UseAdviceWith // Enables dynamic route modification
+class OrderProcessingFailureTest {
+
+    @Autowired
+    private CamelContext camelContext;
+
+    @Test
+    void testOrderFailureScenario() throws Exception {
+        // Stop the context to allow advising
+        camelContext.start(); // Context is typically auto-started by Spring Boot Test, stop it for adviceWith
+        // Advice the route named "process-orders"
+        AdviceWith.camelContext(camelContext)
+            .mockEndpointsAndSkip("activemq:queue:processedOrders")
+            .mockEndpointsAndSkip("activemq:queue:failedOrders");
+
+        camelContext.getRouteDefinition("process-orders")
+            .adviceWith(camelContext, new AdviceWithRouteBuilder() {
+                @Override
+                public void configure() throws Exception {
+                    // Intercept the 'to("bean:orderService?method=process")' call
+                    // and replace it with throwing an exception
+                    interceptSendToEndpoint("bean:orderService?method=process")
+                        .throwException(new IllegalStateException("Simulated Order Processing Failure"));
+                }
+            });
+
+        // Start the Camel context after advising
+        camelContext.start();
+
+        MockEndpoint deadLetterQueue = camelContext.getEndpoint("mock:activemq:queue:failedOrders", MockEndpoint.class);
+        deadLetterQueue.expectedMessageCount(1);
+        deadLetterQueue.expectedBodyReceived().constant("ORDER_DATA"); // Or some specific content
+
+        // Send a message to the route
+        camelContext.createProducerTemplate().sendBody("direct:startOrderProcessing", "ORDER_DATA");
+
+        deadLetterQueue.assertIsSatisfied();
+        camelContext.stop(); // Stop context after test
+    }
+}
+```
+
+  - **Explanation**: The @UseAdviceWith annotation allows us to use AdviceWithRouteBuilder. We stop the CamelContext (which is typically auto-started by Spring Boot for us), apply the adviceWith logic to a specific route, and then restart the CamelContext. Here, we're intercepting a bean call and forcing it to throw an exception, then asserting that the message correctly lands in the failedOrders queue, assuming the route has an onException or Dead Letter Channel configured.
+
+- **@EndpointInject**: This annotation allows you to inject MockEndpoint instances directly into your test class. You can then use these MockEndpoint objects to set expectations (e.g., expectedMessageCount, expectedBodyReceived) and assert that messages arrived as expected.
+  - **Example Use Case**: After a route processes an order, it sends a notification. You want to ensure the notification message is correct.
+  - **Code Example**:
+ 
+```java
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.apache.camel.test.spring.junit5.MockEndpointsAndSkip;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+
+@CamelSpringBootTest
+@SpringBootTest
+@MockEndpointsAndSkip("jms:*") // Mocking JMS endpoints
+class OrderNotificationRouteTest {
+
+    @Autowired
+    private ProducerTemplate producerTemplate; // For sending messages into the route
+
+    @EndpointInject("mock:jms:queue:orderNotifications") // Injects a mock endpoint
+    private MockEndpoint mockNotificationQueue;
+
+    @Test
+    void testOrderNotificationSent() throws Exception {
+        // Set expectations on the mock endpoint
+        mockNotificationQueue.expectedMessageCount(1);
+        mockNotificationQueue.expectedBodyReceived().constant("Order 123 processed successfully.");
+        mockNotificationQueue.expectedHeaderReceived("orderId", "123");
+
+        // Send a message to the route's starting point
+        producerTemplate.sendBodyAndHeader("direct:processOrder", "Order Payload", "orderId", "123");
+
+        // Assert that all expectations on the mock endpoint were met within a timeout
+        mockNotificationQueue.assertIsSatisfied();
+    }
+}
+```
+
+  - **Explanation**: Here, we're injecting mock:jms:queue:orderNotifications directly into our test class. This allows us to define precise expectations on the message content, headers, and count that should arrive at this mock destination. ProducerTemplate is used to programmatically send a message into the Camel route for testing.
+
+- **ProducerTemplate and ConsumerTemplate**: These are core Camel APIs that are extremely useful for testing.
+  - **ProducerTemplate**: Used to programmatically send messages into a Camel route from your test code. You can inject it using @Autowired.
+  - **ConsumerTemplate**: Used to programmatically receive messages from a Camel endpoint. This is useful if your route ends by sending a message to a direct endpoint that your test can then consume. You can also inject it using @Autowired.
+  - **Code Example (using both ProducerTemplate and ConsumerTemplate)**:
+ 
+```java
+import org.apache.camel.CamelContext;
+import org.apache.camel.ConsumerTemplate;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.Exchange;
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+@CamelSpringBootTest
+@SpringBootTest
+class SimpleTransformationRouteTest {
+
+    @Autowired
+    private ProducerTemplate producerTemplate;
+
+    @Autowired
+    private ConsumerTemplate consumerTemplate;
+
+    @Test
+    void testMessageTransformation() throws InterruptedException {
+        // Assuming a route exists that transforms "input" from "direct:start" to "output" in "direct:result"
+        // Example route: from("direct:start").transform(body().prepend("Transformed: ")).to("direct:result");
+
+        producerTemplate.sendBody("direct:start", "My Original Message");
+
+        // Consume the message from the 'result' endpoint
+        String result = consumerTemplate.receiveBody("direct:result", 5000, String.class); // 5 sec timeout
+
+        assertEquals("Transformed: My Original Message", result);
+    }
+}
+```
+  - **Explanation**: This test sends a message to direct:start and then uses ConsumerTemplate to receive the processed message from direct:result. This is a clean way to test input-output transformations without needing mock endpoints for the "end" of the route.
+
+- **NotifyBuilder**: While not specific to camel-test-spring-junit5, NotifyBuilder is a general Camel testing utility that is highly valuable for unit and integration testing. It allows you to wait for specific events to occur in the CamelContext (e.g., a certain number of messages completed, failed, or exchanged) and then assert on those counts. It's particularly useful for testing asynchronous routes where you can't immediately assert the result.
+  - **Example Use Case**: A route processes a batch of orders asynchronously. You want to ensure all orders are processed (or a certain number fail) within a timeout.
+  - **Code Example**:
+ 
+```java
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.builder.NotifyBuilder;
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+import java.util.concurrent.TimeUnit;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+@CamelSpringBootTest
+@SpringBootTest
+class AsyncOrderBatchProcessingTest {
+
+    @Autowired
+    private CamelContext camelContext;
+
+    @Autowired
+    private ProducerTemplate producerTemplate;
+
+    @Test
+    void testBatchProcessingCompletion() throws Exception {
+        // Assuming a route named "batch-processor" that processes 5 messages
+        // from "seda:batchStart" and eventually completes them.
+        // The route could look like: from("seda:batchStart").process(myProcessor).to("log:done");
+
+        // Create a NotifyBuilder to wait for 5 messages to complete
+        NotifyBuilder notify = new NotifyBuilder(camelContext).whenDone(5).create();
+
+        // Send 5 messages asynchronously
+        for (int i = 0; i < 5; i++) {
+            producerTemplate.sendBody("seda:batchStart", "Order " + (i + 1));
+        }
+
+        // Wait for the conditions to be met (up to 10 seconds)
+        assertTrue(notify.matches(10, TimeUnit.SECONDS), "Expected 5 messages to be processed");
+    }
+}
+```
+
+  - **Explanation**: NotifyBuilder allows us to set up a listener for events within the CamelContext. Here, we're waiting for 5 messages to complete processing. The matches() method will block until the condition is met or the timeout expires. This is ideal for testing the overall flow completion of asynchronous routes without needing to assert on individual messages at the end.
+
+**Maven Dependencies**
+
+To use camel-test-spring-junit5, you need to add the following dependency to your pom.xml:
+
+```xml
+<dependency>
+    <groupId>org.apache.camel.springboot</groupId>
+    <artifactId>camel-spring-boot-test-junit5</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+You'll also need junit-jupiter-api and junit-jupiter-engine for JUnit 5, which are typically managed by spring-boot-starter-test.
 
 #### <a name="chapter4part5.2"></a>Chapter 4 - Part 5.2: Practical Examples: E-commerce Order Processing Case Study
 
+Let's apply these concepts to our "E-commerce Order Processing" case study. Imagine we have a route that receives new orders, validates them, and then dispatches them for further processing or to a Dead Letter Channel if validation fails.
+
+**Scenario 1: Testing Basic Order Validation and Routing**
+
+Consider a simple order validation route:
+
+```java
+// src/main/java/com/example/integration/OrderRoutes.java
+package com.example.integration;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderRoutes extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:receiveOrder")
+            .routeId("order-validation-route")
+            .log("Received order: ${body}")
+            .choice()
+                .when(simple("${body.length()} > 10")) // Simple validation: body length > 10
+                    .log("Order is valid, forwarding for processing.")
+                    .to("jms:queue:validOrders")
+                .otherwise()
+                    .log("Order is invalid, sending to error queue.")
+                    .to("jms:queue:invalidOrders")
+            .end();
+    }
+}
+```
+
+Now, let's write a unit test for this route using camel-test-spring-junit5.
+
+```java
+// src/test/java/com/example/integration/OrderRoutesTest.java
+package com.example.integration;
+
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.apache.camel.test.spring.junit5.MockEndpointsAndSkip;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+@CamelSpringBootTest
+@SpringBootTest
+@MockEndpointsAndSkip("jms:*") // Mock all JMS endpoints (validOrders, invalidOrders)
+class OrderRoutesTest {
+
+    @Autowired
+    private CamelContext camelContext; // Inject CamelContext to get endpoints
+
+    @Autowired
+    private ProducerTemplate producerTemplate; // To send messages into the route
+
+    // Inject mock endpoints for assertions
+    @EndpointInject("mock:jms:queue:validOrders")
+    private MockEndpoint validOrdersEndpoint;
+
+    @EndpointInject("mock:jms:queue:invalidOrders")
+    private MockEndpoint invalidOrdersEndpoint;
+
+    @Test
+    void testValidOrderRouting() throws Exception {
+        // 1. Set expectations on the mock endpoints
+        validOrdersEndpoint.expectedMessageCount(1);
+        validOrdersEndpoint.expectedBodyReceived().constant("ValidOrderPayload"); // Expect the body to be "ValidOrderPayload"
+
+        invalidOrdersEndpoint.expectedMessageCount(0); // Expect no messages to this endpoint
+
+        // 2. Send a valid order message to the route
+        producerTemplate.sendBody("direct:receiveOrder", "ValidOrderPayload");
+
+        // 3. Assert that all expectations were met
+        validOrdersEndpoint.assertIsSatisfied();
+        invalidOrdersEndpoint.assertIsSatisfied();
+    }
+
+    @Test
+    void testInvalidOrderRouting() throws Exception {
+        // 1. Set expectations
+        validOrdersEndpoint.expectedMessageCount(0); // Expect no messages to this endpoint
+
+        invalidOrdersEndpoint.expectedMessageCount(1);
+        invalidOrdersEndpoint.expectedBodyReceived().constant("Short"); // Expect the body to be "Short"
+
+        // 2. Send an invalid order message
+        producerTemplate.sendBody("direct:receiveOrder", "Short"); // Body length <= 10, so it's invalid
+
+        // 3. Assertions
+        validOrdersEndpoint.assertIsSatisfied();
+        invalidOrdersEndpoint.assertIsSatisfied();
+    }
+
+    @Test
+    void testMultipleOrdersRouting() throws Exception {
+        // 1. Set expectations for a mix of valid and invalid
+        validOrdersEndpoint.expectedMessageCount(2);
+        validOrdersEndpoint.expectedBodiesReceived("OrderA_LongEnough", "AnotherValidOrder");
+
+        invalidOrdersEndpoint.expectedMessageCount(1);
+        invalidOrdersEndpoint.expectedBodiesReceived("Short");
+
+        // 2. Send messages
+        producerTemplate.sendBody("direct:receiveOrder", "OrderA_LongEnough");
+        producerTemplate.sendBody("direct:receiveOrder", "Short");
+        producerTemplate.sendBody("direct:receiveOrder", "AnotherValidOrder");
+
+        // 3. Assertions
+        validOrdersEndpoint.assertIsSatisfied();
+        invalidOrdersEndpoint.assertIsSatisfied();
+    }
+}
+```
+
+**Explanation:**
+
+- We use @CamelSpringBootTest and @SpringBootTest to load our Spring Boot context, including OrderRoutes.
+- @MockEndpointsAndSkip("jms:*") automatically replaces jms:queue:validOrders and jms:queue:invalidOrders with mock:jms:queue:validOrders and mock:jms:queue:invalidOrders. This ensures no actual JMS broker is involved.
+- @EndpointInject is used to directly inject MockEndpoint instances, which are the Camel's powerful testing mocks.
+- ProducerTemplate is autowired to send test messages into our direct:receiveOrder endpoint, simulating an incoming order.
+- In each test method, we first define expectedMessageCount and expectedBodyReceived (or expectedHeaderReceived, etc.) on our MockEndpoint objects. This tells Camel what we expect to happen.
+- After sending the message(s), assertIsSatisfied() is called on each MockEndpoint. This method blocks until the expectations are met or a timeout occurs, then verifies them. If any expectation is not met, the test fails.
+
+**Scenario 2: Testing a Route with an Error Handling Strategy (onException)**
+
+Let's modify our order processing to include a more robust validation logic, perhaps using a Spring service, and an onException block from our earlier lessons in this module.
+
+First, a simple Spring service for complex validation:
+
+```java
+// src/main/java/com/example/integration/OrderValidatorService.java
+package com.example.integration;
+
+import org.springframework.stereotype.Service;
+
+@Service
+public class OrderValidatorService {
+
+    public String validateOrder(String orderPayload) {
+        if (orderPayload == null || orderPayload.trim().isEmpty()) {
+            throw new IllegalArgumentException("Order payload cannot be empty.");
+        }
+        if (orderPayload.contains("INVALID_KEYWORD")) {
+            throw new OrderValidationException("Order contains blacklisted keywords.");
+        }
+        return orderPayload.toUpperCase(); // Simulate some processing on valid order
+    }
+}
+
+// Custom exception
+class OrderValidationException extends RuntimeException {
+    public OrderValidationException(String message) {
+        super(message);
+    }
+}
+```
+
+Now, the updated Camel route using this service and onException:
+
+```java
+// src/main/java/com/example/integration/AdvancedOrderRoutes.java
+package com.example.integration;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class AdvancedOrderRoutes extends RouteBuilder {
+
+    @Override
+    public void configure() {
+
+        // Define a custom error handler for OrderValidationException
+        onException(OrderValidationException.class)
+            .handled(true) // Indicate that the exception has been handled
+            .log("Order validation failed: ${exception.message} for order: ${body}")
+            .to("jms:queue:validationErrors");
+
+        // Route for processing new orders
+        from("direct:processNewOrder")
+            .routeId("advanced-order-processor")
+            .log("Processing new order: ${body}")
+            .bean(OrderValidatorService.class, "validateOrder") // Call our Spring service
+            .log("Order successfully validated: ${body}")
+            .to("jms:queue:finalProcessedOrders");
+    }
+}
+```
+
+Now, let's unit test this route, specifically focusing on the onException behavior using @UseAdviceWith to simulate validation failures.
+
+```java
+// src/test/java/com/example/integration/AdvancedOrderRoutesTest.java
+package com.example.integration;
+
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.builder.AdviceWith;
+import org.apache.camel.builder.AdviceWithRouteBuilder;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.test.spring.junit5.CamelSpringBootTest;
+import org.apache.camel.test.spring.junit5.UseAdviceWith;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+@CamelSpringBootTest
+@SpringBootTest
+@UseAdviceWith // Essential for modifying routes during testing
+class AdvancedOrderRoutesTest {
+
+    @Autowired
+    private CamelContext camelContext;
+
+    @Autowired
+    private ProducerTemplate producerTemplate;
+
+    @Test
+    void testValidOrderProcessedSuccessfully() throws Exception {
+        // Stop context to apply advice, then mock endpoints
+        camelContext.start(); // Context is typically auto-started by Spring Boot Test, stop it for adviceWith
+        AdviceWith.camelContext(camelContext)
+                .mockEndpointsAndSkip("jms:queue:validationErrors", "jms:queue:finalProcessedOrders");
+
+        // IMPORTANT: Restart Camel context after advising
+        camelContext.start();
+
+        MockEndpoint finalProcessedOrders = camelContext.getEndpoint("mock:jms:queue:finalProcessedOrders", MockEndpoint.class);
+        MockEndpoint validationErrors = camelContext.getEndpoint("mock:jms:queue:validationErrors", MockEndpoint.class);
+
+        finalProcessedOrders.expectedMessageCount(1);
+        finalProcessedOrders.expectedBodyReceived().constant("MY_VALID_ORDER"); // Expect uppercase from service
+        validationErrors.expectedMessageCount(0);
+
+        producerTemplate.sendBody("direct:processNewOrder", "My Valid Order");
+
+        finalProcessedOrders.assertIsSatisfied();
+        validationErrors.assertIsSatisfied();
+        camelContext.stop(); // Stop context after test
+    }
+
+    @Test
+    void testInvalidOrderTriggersOnException() throws Exception {
+        // Stop context to apply advice, then mock endpoints
+        camelContext.start(); // Context is typically auto-started by Spring Boot Test, stop it for adviceWith
+        AdviceWith.camelContext(camelContext)
+                .mockEndpointsAndSkip("jms:queue:validationErrors", "jms:queue:finalProcessedOrders");
+
+        // Advise the route to force the OrderValidatorService bean call to throw a specific exception
+        // This simulates the actual failure without needing a real invalid payload if we want to focus on onException
+        camelContext.getRouteDefinition("advanced-order-processor")
+            .adviceWith(camelContext, new AdviceWithRouteBuilder() {
+                @Override
+                public void configure() throws Exception {
+                    // Intercept the bean call and force it to throw our custom exception
+                    interceptSendToEndpoint("bean:orderValidatorService?method=validateOrder")
+                        .throwException(new OrderValidationException("Simulated Validation Error"));
+                }
+            });
+
+        // IMPORTANT: Restart Camel context after advising
+        camelContext.start();
+
+        MockEndpoint finalProcessedOrders = camelContext.getEndpoint("mock:jms:queue:finalProcessedOrders", MockEndpoint.class);
+        MockEndpoint validationErrors = camelContext.getEndpoint("mock:jms:queue:validationErrors", MockEndpoint.class);
+
+        finalProcessedOrders.expectedMessageCount(0);
+        validationErrors.expectedMessageCount(1);
+        validationErrors.expectedBodyReceived().constant("Some Order Data"); // The original body goes to error queue
+        validationErrors.expectedHeaderReceived("CamelExceptionCaught", OrderValidationException.class); // Check exception header
+
+        producerTemplate.sendBody("direct:processNewOrder", "Some Order Data");
+
+        finalProcessedOrders.assertIsSatisfied();
+        validationErrors.assertIsSatisfied();
+        camelContext.stop(); // Stop context after test
+    }
+}
+```
+
+**Explanation:**
+
+- In testValidOrderProcessedSuccessfully, we confirm that a "good" message bypasses the onException and goes to finalProcessedOrders.
+- In testInvalidOrderTriggersOnException, we use @UseAdviceWith and AdviceWithRouteBuilder to intercept the call to our OrderValidatorService bean. Instead of letting the bean actually execute, we force it to throw an OrderValidationException. This allows us to precisely test the onException block's behavior (routing to jms:queue:validationErrors) without relying on specific input that would naturally trigger the exception from the service.
+- Notice the camelContext.start() and camelContext.stop() calls. When UseAdviceWith is present, CamelContext is started by @SpringBootTest, but we need to stop it before calling AdviceWith.camelContext() or getRouteDefinition().adviceWith(), and then restart it to apply the changes before running the test.
+
+This demonstrates the power of camel-test-spring-junit5 to isolate and thoroughly test complex routing logic and error handling scenarios in your Spring Boot applications. By mocking external dependencies and dynamically modifying routes, you gain fine-grained control over your test environment, leading to more robust and reliable integration solutions.
+
 #### <a name="chapter4part6"></a>Chapter 4 - Part 6: Integration Testing Camel Applications with Spring Boot Test Framework
+
+Integration testing is a critical practice for ensuring the reliability and correctness of complex integration solutions built with Apache Camel and Spring Boot. While unit testing, as explored in the previous lesson, allows us to verify individual components or route segments in isolation, integration testing steps up the validation by verifying how different parts of an application, and potentially external systems, work together. It provides confidence that your Camel routes, interacting with Spring-managed services and various components (like file, JMS, HTTP, database), behave as expected when deployed as a cohesive application. This level of testing is indispensable for enterprise integration patterns, where the flow of messages often spans multiple systems and requires robust error handling and transaction management.
 
 #### <a name="chapter4part6.1"></a>Chapter 4 - Part 6.1: Understanding Integration Testing for Camel Applications
 
+Integration testing focuses on the interaction between different modules or services within an application, or between the application and external systems. For Apache Camel applications running on Spring Boot, this means testing the entire lifecycle of a message through a route that might involve file I/O, messaging queues, REST API calls, database operations, and custom business logic implemented via Spring beans.
+
+**Why Integration Test?**
+
+Integration tests are essential because they:
+
+- **Verify End-to-End Flows**: They confirm that messages flow correctly through an entire route, potentially involving multiple Camel components and Spring services.
+- **Expose Interaction Bugs**: Issues often arise not from individual components, but from how they interact. For instance, a data format expected by one component might not be produced by another.
+- **Validate Configuration**: They ensure that Spring Boot's auto-configuration, externalized properties, and component setups are correctly applied and functional.
+- **Increase Confidence in Deployments**: Passing integration tests provides a higher degree of assurance that the application will function correctly in a production-like environment, reducing the risk of runtime errors.
+- **Test Error Handling and Recovery**: These tests are crucial for verifying that onException clauses, Dead Letter Channels, and transaction management correctly handle anticipated and unanticipated failures.
+
+**Distinguishing from Unit Testing**
+
+While both unit and integration testing are vital, they serve different purposes and operate at different scopes:
+
+|Feature | Unit Testing (camel-test-spring-junit5) | Integration Testing (spring-boot-starter-test) |
+| :--: | :--: | :--: |
+|Scope |	Individual routes, processors, or small segments in isolation. |	Entire application context, multiple routes, interactions between components and services.|
+|Environment |	Lightweight, often using MockEndpoint for external interactions. |	Loads full Spring Boot application context, potentially using actual components.|
+|Speed |	Very fast, ideal for quick feedback during development. |	Slower, as it involves context loading and potentially more complex interactions.|
+|Dependencies |	Minimizes external dependencies, often mocks everything. |	Involves real dependencies (database, message broker, etc., though often test versions).|
+|Goal |	Verify correctness of individual logic units. |	Verify interactions, configuration, and end-to-end system behavior.|
+|Framework |	camel-test-spring-junit5 (which leverages Spring Test for basic context). |	spring-boot-starter-test (which includes JUnit 5, Spring Test, Mockito, AssertJ).|
+
+For example, in our E-commerce Order Processing case study:
+
+- **Unit Test**: You might unit test a OrderProcessor Spring bean to ensure it correctly transforms an order object. Or unit test a single Camel route that picks up a file and logs its content, using MockEndpoint to assert the message content.
+- **Integration Test**: You would test a scenario where a new order file is placed in a directory, processed by a Camel route, transforms the data using the OrderProcessor bean, attempts to call an external inventory service (which might be mocked for the test), and then places a message on a JMS queue. This tests the file component, the OrderProcessor bean, the http or rest component, and the jms component together.
+
+**Key Challenges in Integration Testing Camel Routes**
+
+Integration testing can introduce complexity:
+
+- **Managing External Dependencies**: Routes often interact with databases, message queues, REST APIs, or file systems. For tests, these need to be available, or carefully mocked/stubbed to ensure tests are fast and repeatable. Testcontainers can be invaluable here.
+- **Test Data Management**: Setting up initial state and cleaning up after tests (e.g., database records, queue messages, files) can be intricate.
+- **Asynchronous Operations**: Many Camel routes are asynchronous. Asserting the outcome of an asynchronous flow requires careful synchronization (e.g., waiting for messages on a mock endpoint or polling a test database).
+- **Route Modification for Isolation**: Sometimes, even in integration tests, you might want to "short-circuit" part of a route or mock a specific internal step without altering the production code.
+
 #### <a name="chapter4part6.2"></a>Chapter 4 - Part 6.2: Setting Up Your Spring Boot Integration Tests
+
+Spring Boot's test framework provides a robust foundation for integration testing. It allows you to load your full application context, making all your Camel routes, components, and Spring beans available for testing.
+
+**The @SpringBootTest Annotation**
+
+The core of Spring Boot integration testing is the @SpringBootTest annotation. When applied to a JUnit 5 test class, it instructs Spring Boot to load the entire application context, just as if you were running your application normally. This means all @Component, @Service, @Repository, and @Configuration classes are discovered, and all Camel routes defined within @RouteBuilder beans are started.
+
+```java
+import org.apache.camel.CamelContext;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+// This annotation tells Spring Boot to load the full application context.
+// It finds your main application class (often annotated with @SpringBootApplication)
+// and initializes all beans and components, including CamelContext and its routes.
+@SpringBootTest
+public class OrderProcessingIntegrationTest {
+
+    // Autowire the CamelContext to interact with the Camel runtime.
+    // This CamelContext will have all routes and components from your application.
+    @Autowired
+    private CamelContext camelContext;
+
+    @Test
+    void contextLoads() {
+        // Simple test to ensure the Spring Boot application context loads successfully.
+        // This implicitly verifies that CamelContext is initialized and routes are started.
+        // You can add assertions here, e.g., to check if specific routes are present.
+        System.out.println("CamelContext loaded successfully: " + camelContext.getName());
+        org.junit.jupiter.api.Assertions.assertNotNull(camelContext);
+        org.junit.jupiter.api.Assertions.assertTrue(camelContext.isStarted());
+    }
+
+    // Additional integration tests will follow here.
+}
+```
+
+You can customize @SpringBootTest behavior:
+
+- webEnvironment: Controls how the web environment is started (e.g., SpringBootTest.WebEnvironment.RANDOM_PORT for testing REST APIs).
+- properties: Allows overriding properties in application.properties for the test.
+- args: Command-line arguments.
+- classes: Specifies which configuration classes to use if you don't want to load the entire application.
+
+**Auto-configuration for Camel Tests**
+
+When @SpringBootTest is used, Spring Boot's auto-configuration mechanisms kick in. This means if you have camel-spring-boot-starter on your classpath, Spring Boot automatically configures and starts CamelContext, discovers your RouteBuilder beans, and makes them available.
+
+If you need specific Camel configurations for your tests, you can use a test-specific application-test.properties (or application-test.yml) file. Spring Boot will automatically pick up properties from files matching application-{profile}.properties when that profile is active. You can activate a profile using @ActiveProfiles("test").
+
+```java
+import org.springframework.test.context.ActiveProfiles;
+// ... other imports
+
+@SpringBootTest
+@ActiveProfiles("test") // Activates the 'test' profile, loading application-test.properties
+public class OrderProcessingIntegrationTest {
+    // ... test methods
+}
+```
+
+In your src/test/resources/application-test.properties, you might configure test-specific endpoints:
+
+```
+# Disable real external services during integration tests
+camel.component.http.connectTimeout=100
+camel.component.http.socketTimeout=100
+camel.component.file.noop=true # Prevent file component from moving files
+camel.component.jms.brokerURL=vm://test-broker?broker.persistent=false # Use an in-memory JMS broker
+```
+
+This ensures your integration tests use lightweight or in-memory versions of external services, making them faster and more deterministic.
+
+**Injecting Camel Components and Services**
+
+Within your @SpringBootTest classes, you can @Autowired any Spring bean or Camel component that is managed by the application context. This includes:
+
+- CamelContext: The central runtime for Camel.
+- ProducerTemplate: For sending messages into your Camel routes from tests.
+- ConsumerTemplate: For receiving messages from Camel endpoints in tests.
+- Custom Spring beans: Any @Service, @Repository, or @Component that your routes interact with.
+
+```java
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.ConsumerTemplate;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+@SpringBootTest
+public class OrderProcessingIntegrationTest {
+
+    @Autowired
+    private CamelContext camelContext; // Access to the Camel runtime
+
+    @Autowired
+    private ProducerTemplate producerTemplate; // For sending messages to routes
+
+    @Autowired
+    private ConsumerTemplate consumerTemplate; // For consuming messages from routes (less common in integration tests)
+
+    // Example: A custom Spring service that your Camel routes might use
+    // Assuming you have an interface and implementation like:
+    // public interface OrderValidator { boolean isValid(String orderPayload); }
+    // @Service public class DefaultOrderValidator implements OrderValidator { ... }
+    // If OrderValidator is a Spring bean, you can inject it:
+    // @Autowired
+    // private OrderValidator orderValidator;
+
+    @Test
+    void testOrderSubmissionViaDirectEndpoint() throws Exception {
+        // Given an order payload
+        String orderPayload = "{\"orderId\":\"123\", \"item\":\"Laptop\", \"quantity\":1}";
+
+        // When the order is submitted to a direct endpoint in a Camel route
+        // Assuming there's a route: from("direct:processOrder")...
+        producerTemplate.sendBody("direct:processOrder", orderPayload);
+
+        // Then, we can verify the outcome.
+        // For a simple example, we might assume the order is persisted and accessible via a service.
+        // In a real scenario, you'd assert against a mock endpoint, a test database, or a test queue.
+        // For now, let's just log a confirmation.
+        System.out.println("Order payload sent to direct:processOrder");
+
+        // More robust verification will come with AdviceWith and MockEndpoint usage later.
+    }
+}
+```
 
 #### <a name="chapter4part6.3"></a>Chapter 4 - Part 6.3: Modifying Routes with AdviceWith for Integration Tests
 
+A powerful feature of Camel's testing utilities, particularly useful in integration tests, is AdviceWith. It allows you to dynamically modify a route at runtime before it starts, specifically for the duration of a test. This is crucial for integration tests because it enables you to:
+
+- **Mock External Systems**: Instead of connecting to a real external service (e.g., a payment gateway API or a legacy ERP system), you can intercept calls to its endpoint and return predefined responses.
+- **Isolate Route Segments**: You can "cut" a route at a certain point and replace the remainder with a mock: endpoint, allowing you to test only the preceding parts.
+- **Inject Test Data/Errors**: You can insert test data or simulate error conditions at specific points in a route.
+- **Verify Intermediate Steps**: You can tap into a route at any point and assert the message state at that stage.
+
+To use AdviceWith, you need to:
+
+- Add camel-test-spring-junit5 to your pom.xml dependencies.
+- Annotate your test class with @SpringBootTest and @CamelSpringTest.
+- Inject CamelContext and the RouteBuilder for the route you want to advise.
+- Call routeBuilder.getRoute().adviceWith(camelContext, () -> { ... }); within a @BeforeEach or @BeforeAll method, ensuring CamelContext is stopped before applying adviceWith and then started again.
+
+```xml
+<!-- In pom.xml, make sure you have this dependency for AdviceWith and Spring-based Camel testing -->
+<dependency>
+    <groupId>org.apache.camel</groupId>
+    <artifactId>camel-test-spring-junit5</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+**The Power of AdviceWith**
+
+AdviceWith essentially lets you "re-wire" a route dynamically for testing purposes without changing its original definition. This means you can:
+
+- interceptSendToEndpoint(uri): Intercept messages destined for a specific endpoint URI (e.g., http:external-service) and redirect them to a mock: endpoint or process them differently.
+- replaceFromWith(uri): Change the starting endpoint of a route.
+- weaveAddLast(): Add new nodes at the end of a route.
+- weaveById(id).replace().to(uri): Replace a specific node in the route (identified by an id) with another endpoint or processor.
+- weaveByToString(regex).remove(): Remove nodes matching a pattern.
+
+**Intercepting and Mocking Endpoints**
+
+Let's assume our E-commerce Order Processing system has a route that processes new orders from a file, enriches them by calling an external inventory service, and then sends them to a JMS queue for fulfillment.
+
+```java
+// src/main/java/com/example/camel/OrderRouteBuilder.java
+package com.example.camel;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderRouteBuilder extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("file:src/data/inbox?noop=true&idempotent=true")
+            .routeId("orderIngestionRoute")
+            .unmarshal().json() // Unmarshal JSON file content to a Map or Pojo
+            .log("Received new order: ${body}")
+            .enrich("http://localhost:8081/inventory/check?item=${body[item]}", (oldExchange, newExchange) -> {
+                // Enrich original order with inventory details
+                String inventoryResponse = newExchange.getIn().getBody(String.class);
+                oldExchange.getIn().setHeader("InventoryStatus", inventoryResponse);
+                return oldExchange;
+            }).id("inventoryEnrichment") // Give this EIP an ID for AdviceWith
+            .log("Order after inventory check: ${body} with status ${header.InventoryStatus}")
+            .choice()
+                .when(header("InventoryStatus").isEqualTo("IN_STOCK"))
+                    .to("jms:queue:fulfillmentOrders")
+                    .log("Order sent to fulfillment: ${body}")
+                .otherwise()
+                    .to("jms:queue:backorderQueue")
+                    .log("Order sent to backorder: ${body}")
+            .end();
+    }
+}
+```
+
+Now, let's write an integration test that uses AdviceWith to mock the external HTTP inventory service.
+
+```java
+package com.example.camel;
+
+import org.apache.camel.CamelContext;
+import org.apache.camel.EndpointInject;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.model.RouteDefinition;
+import org.apache.camel.test.spring.junit5.CamelSpringTest;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.ActiveProfiles;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+@SpringBootTest
+@CamelSpringTest // Required for AdviceWith in Spring Boot context
+@ActiveProfiles("test") // Use test-specific configuration (e.g., in-memory JMS)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD) // Reset CamelContext for each test
+public class OrderProcessingIntegrationTest {
+
+    @Autowired
+    private CamelContext camelContext;
+
+    @Autowired
+    private ProducerTemplate producerTemplate;
+
+    // Autowire the specific RouteBuilder if you want to modify its route definition
+    @Autowired
+    private OrderRouteBuilder orderRouteBuilder;
+
+    // Mock endpoint for verifying messages sent to the fulfillment queue
+    @EndpointInject("mock:fulfillmentOrders")
+    private MockEndpoint fulfillmentOrdersMock;
+
+    // Mock endpoint for verifying messages sent to the backorder queue
+    @EndpointInject("mock:backorderQueue")
+    private MockEndpoint backorderQueueMock;
+
+    @BeforeEach
+    void setup() throws Exception {
+        // Before each test, we need to stop the CamelContext to apply AdviceWith,
+        // then start it again. DirtiesContext handles stopping/starting in most cases,
+        // but explicit handling might be needed depending on the test setup.
+        // With @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD),
+        // Spring reloads the context for each test, effectively providing a clean CamelContext.
+        // We ensure the mocks are reset.
+        fulfillmentOrdersMock.reset();
+        backorderQueueMock.reset();
+
+        // Get the route definition to apply AdviceWith
+        RouteDefinition routeDefinition = camelContext.getRouteDefinition("orderIngestionRoute");
+
+        // Apply AdviceWith to modify the route at runtime for testing
+        // This is done BEFORE the route starts for the test
+        routeDefinition.adviceWith(camelContext, new RouteBuilder() {
+            @Override
+            public void configure() {
+                // Intercept calls to the external inventory service endpoint
+                // and replace them with a direct response using 'toD' or 'setBody'
+                // Here, we use interceptSendToEndpoint and then set a mock response directly.
+                interceptSendToEndpoint("http://localhost:8081/inventory/check*")
+                    .skipSendToOriginalEndpoint() // Prevent sending to the actual HTTP endpoint
+                    .setBody(constant("IN_STOCK")) // Simulate inventory check always returns "IN_STOCK"
+                    .setHeader("SimulatedResponse", constant(true)); // Add a header to confirm interception
+
+                // Also, replace the actual JMS queues with mock endpoints for verification
+                // This allows us to assert messages sent to these "external" systems
+                interceptSendToEndpoint("jms:queue:fulfillmentOrders")
+                    .skipSendToOriginalEndpoint()
+                    .to(fulfillmentOrdersMock);
+
+                interceptSendToEndpoint("jms:queue:backorderQueue")
+                    .skipSendToOriginalEndpoint()
+                    .to(backorderQueueMock);
+            }
+        });
+
+        // If not using @DirtiesContext, you would manually stop and start CamelContext here.
+        // camelContext.stop();
+        // camelContext.start();
+    }
+
+    @Test
+    void testOrderProcessedSuccessfullyWhenInStock() throws Exception {
+        // Set expectations on the mock endpoints
+        fulfillmentOrdersMock.expectedMessageCount(1); // Expect one message to fulfillment
+        backorderQueueMock.expectedMessageCount(0); // Expect no messages to backorder
+
+        // Create a test order payload
+        String orderPayload = "{\"orderId\":\"ORDER-001\", \"item\":\"Laptop\", \"quantity\":1}";
+
+        // Simulate a file being picked up by the 'file' component
+        // Since the 'file' component is asynchronous, we need to trigger it and wait.
+        // A common pattern is to replace the 'from' endpoint with a 'direct' endpoint
+        // in AdviceWith for easier testing, or use a producerTemplate to send directly
+        // if the route itself is not file-source specific for core logic.
+        // For simplicity here, we'll directly send to the route's advised 'from' endpoint
+        // or ensure the file is placed for the 'file' component to pick up.
+        // Given AdviceWith is applied, the 'from' endpoint is still 'file:...'
+        // The easiest way to trigger a file-based route in integration test is to
+        // actually place a file in the expected input directory.
+        // Let's create a temporary file.
+        java.io.File inboxDir = new java.io.File("src/data/inbox");
+        if (!inboxDir.exists()) {
+            inboxDir.mkdirs();
+        }
+        java.io.File testFile = new java.io.File("src/data/inbox/order-test-001.json");
+        try (java.io.FileWriter writer = new java.io.FileWriter(testFile)) {
+            writer.write(orderPayload);
+        }
+
+        // Allow Camel to process the file
+        Thread.sleep(500); // Give some time for the file consumer to poll and process
+
+        // Assert that the mock endpoints received the expected messages
+        fulfillmentOrdersMock.assertIsSatisfied();
+        backorderQueueMock.assertIsSatisfied();
+
+        // Optionally, assert content of the message sent to fulfillment
+        String receivedBody = fulfillmentOrdersMock.getExchanges().get(0).getIn().getBody(String.class);
+        assertNotNull(receivedBody);
+        org.junit.jupiter.api.Assertions.assertTrue(receivedBody.contains("ORDER-001"));
+
+        // Clean up the test file
+        testFile.delete();
+    }
+
+    @Test
+    void testOrderSentToBackorderWhenOutOfStock() throws Exception {
+        // We need to re-advise the route specifically for this test to simulate "OUT_OF_STOCK"
+        // This requires the route to be stopped and re-advised. @DirtiesContext helps here.
+
+        // Get the route definition again for this specific test case
+        RouteDefinition routeDefinition = camelContext.getRouteDefinition("orderIngestionRoute");
+        routeDefinition.adviceWith(camelContext, new RouteBuilder() {
+            @Override
+            public void configure() {
+                // Intercept inventory check and force "OUT_OF_STOCK"
+                interceptSendToEndpoint("http://localhost:8081/inventory/check*")
+                    .skipSendToOriginalEndpoint()
+                    .setBody(constant("OUT_OF_STOCK")); // Simulate out of stock
+                
+                // Also, replace the actual JMS queues with mock endpoints for verification
+                interceptSendToEndpoint("jms:queue:fulfillmentOrders")
+                    .skipSendToOriginalEndpoint()
+                    .to(fulfillmentOrdersMock);
+
+                interceptSendToEndpoint("jms:queue:backorderQueue")
+                    .skipSendToOriginalEndpoint()
+                    .to(backorderQueueMock);
+            }
+        });
+
+        fulfillmentOrdersMock.expectedMessageCount(0); // Expect no messages to fulfillment
+        backorderQueueMock.expectedMessageCount(1); // Expect one message to backorder
+
+        String orderPayload = "{\"orderId\":\"ORDER-002\", \"item\":\"Desk\", \"quantity\":2}";
+
+        java.io.File inboxDir = new java.io.File("src/data/inbox");
+        if (!inboxDir.exists()) {
+            inboxDir.mkdirs();
+        }
+        java.io.File testFile = new java.io.File("src/data/inbox/order-test-002.json");
+        try (java.io.FileWriter writer = new java.io.FileWriter(testFile)) {
+            writer.write(orderPayload);
+        }
+
+        Thread.sleep(500);
+
+        fulfillmentOrdersMock.assertIsSatisfied();
+        backorderQueueMock.assertIsSatisfied();
+
+        String receivedBody = backorderQueueMock.getExchanges().get(0).getIn().getBody(String.class);
+        assertNotNull(receivedBody);
+        org.junit.jupiter.api.Assertions.assertTrue(receivedBody.contains("ORDER-002"));
+
+        testFile.delete();
+    }
+}
+```
+
+This example demonstrates how AdviceWith allows us to control the behavior of external dependencies (http endpoint and jms endpoints) during integration tests, ensuring that we test our application's logic without needing to run real external services. The @DirtiesContext annotation is important here because AdviceWith permanently modifies the RouteDefinition for the CamelContext. If you want a fresh, unmodified CamelContext for each test method (which is often desirable for isolation in integration tests), @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD) forces Spring to reload the entire application context, including CamelContext, before each test.
+
+**Skipping Parts of a Route**
+
+AdviceWith can also be used to simplify a route for a specific test scenario by skipping certain parts. For instance, if you only want to test the initial ingestion and transformation logic of orderIngestionRoute and don't care about the final JMS delivery in a particular test, you could skip the conditional logic and JMS endpoints:
+
+```java
+// Inside AdviceWith configure() method:
+// Weave into the route at the "inventoryEnrichment" step (the ID we gave earlier)
+// and replace everything *after* it with a direct mock endpoint.
+weaveById("inventoryEnrichment").after().to("mock:afterInventoryEnrichment");
+
+// Now, the route will go from "file:..." -> "inventoryEnrichment" -> "mock:afterInventoryEnrichment"
+// This effectively skips the 'choice' and 'jms' parts.
+// You would then assert against mock:afterInventoryEnrichment
+```
+
 #### <a name="chapter4part6.4"></a>Chapter 4 - Part 6.4: Practical Integration Testing Examples: E-commerce Order Processing
+
+Let's expand on our E-commerce Order Processing case study with more detailed integration testing scenarios, particularly focusing on how to test routes that involve conditional logic and error handling, concepts covered in previous lessons of this module.
+
+**Scenario 1: Testing Order Ingestion and External Service Interaction**
+
+We already covered a basic scenario above. Let's make it more robust by adding assertions on headers and body content throughout the flow.
+
+Consider an OrderProcessingRoute that:
+- Consumes JSON orders from an orders.in directory.
+- Enriches the order with a customerName by calling an external customerService REST endpoint.
+- Performs a Content-Based Router (CBR) check: If the customer is "VIP", it sends to queue:vipOrders, otherwise to queue:standardOrders.
+
+```java
+// src/main/java/com/example/camel/OrderProcessingRoute.java
+package com.example.camel;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderProcessingRoute extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        // Dead Letter Channel for this route in case of unhandled exceptions
+        errorHandler(deadLetterChannel("jms:queue:dlq").maximumRedeliveries(2).redeliveryDelay(1000));
+
+        from("file:src/data/orders.in?noop=true&idempotent=true")
+            .routeId("mainOrderProcessingRoute")
+            .unmarshal().json() // Assuming file contains JSON array or single object
+            .split(body()) // If file contains an array, split it into individual messages
+                .log("Processing order for customer ID: ${body[customerId]}")
+                // Enrich with customer details from an external service
+                .enrich("http://localhost:8082/customer/${body[customerId]}", (oldExchange, newExchange) -> {
+                    String customerResponse = newExchange.getIn().getBody(String.class);
+                    // Parse customerResponse (e.g., from JSON to Map/POJO) and extract customerName
+                    // For simplicity, let's assume the response is just the customer name string
+                    oldExchange.getIn().setHeader("customerName", customerResponse.trim());
+                    return oldExchange;
+                }).id("customerEnrichment")
+                .log("Order enriched for customer: ${header.customerName}")
+                .choice()
+                    .when(header("customerName").isEqualTo("VIP Customer"))
+                        .to("jms:queue:vipOrders")
+                        .log("Order for VIP customer sent to VIP queue.")
+                    .otherwise()
+                        .to("jms:queue:standardOrders")
+                        .log("Order for standard customer sent to standard queue.")
+                .end()
+            .end(); // End of split
+    }
+}
+```
+
+**Setting up the Test Class and AdviceWith**
+
+```java
+package com.example.camel;
+
+import org.apache.camel.CamelContext;
+import org.apache.camel.EndpointInject;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.model.RouteDefinition;
+import org.apache.camel.test.spring.junit5.CamelSpringTest;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.ActiveProfiles;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+@SpringBootTest
+@CamelSpringTest
+@ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
+public class FullOrderProcessingIntegrationTest {
+
+    @Autowired
+    private CamelContext camelContext;
+
+    @Autowired
+    private ProducerTemplate producerTemplate;
+
+    @EndpointInject("mock:vipOrders")
+    private MockEndpoint vipOrdersMock;
+
+    @EndpointInject("mock:standardOrders")
+    private MockEndpoint standardOrdersMock;
+
+    @BeforeEach
+    void setupMocksAndAdvice() throws Exception {
+        vipOrdersMock.reset();
+        standardOrdersMock.reset();
+
+        RouteDefinition routeDefinition = camelContext.getRouteDefinition("mainOrderProcessingRoute");
+
+        routeDefinition.adviceWith(camelContext, new RouteBuilder() {
+            @Override
+            public void configure() {
+                // Intercept calls to customer service and return different responses based on customer ID
+                interceptSendToEndpoint("http://localhost:8082/customer/*")
+                    .skipSendToOriginalEndpoint()
+                    .choice()
+                        .when(header("CamelHttpUri").contains("customer/vip123"))
+                            .setBody(constant("VIP Customer")) // Simulate VIP customer
+                        .when(header("CamelHttpUri").contains("customer/std456"))
+                            .setBody(constant("Standard Customer")) // Simulate Standard customer
+                        .otherwise()
+                            .setBody(constant("Unknown Customer")); // Default fallback
+                    .end();
+
+                // Mock JMS queues
+                interceptSendToEndpoint("jms:queue:vipOrders")
+                    .skipSendToOriginalEndpoint()
+                    .to(vipOrdersMock);
+
+                interceptSendToEndpoint("jms:queue:standardOrders")
+                    .skipSendToOriginalEndpoint()
+                    .to(standardOrdersMock);
+
+                // Mock Dead Letter Channel for verification if testing error scenarios
+                interceptSendToEndpoint("jms:queue:dlq")
+                    .skipSendToOriginalEndpoint()
+                    .to("mock:dlq");
+            }
+        });
+    }
+
+    @Test
+    void testVipOrderProcessing() throws Exception {
+        vipOrdersMock.expectedMessageCount(1);
+        standardOrdersMock.expectedMessageCount(0);
+        vipOrdersMock.expectedHeaderReceived("customerName", "VIP Customer");
+
+        String orderPayload = "[{\"orderId\":\"O-001\", \"customerId\":\"vip123\", \"amount\":100.0}]";
+        java.io.File testFile = createTestFile("src/data/orders.in/vip_order.json", orderPayload);
+
+        Thread.sleep(500); // Allow time for file consumer
+
+        vipOrdersMock.assertIsSatisfied();
+        standardOrdersMock.assertIsSatisfied();
+
+        String receivedBody = vipOrdersMock.getExchanges().get(0).getIn().getBody(String.class);
+        assertNotNull(receivedBody);
+        assertTrue(receivedBody.contains("O-001"));
+        assertTrue(vipOrdersMock.getExchanges().get(0).getIn().getHeader("customerName", String.class).equals("VIP Customer"));
+
+        testFile.delete();
+    }
+
+    @Test
+    void testStandardOrderProcessing() throws Exception {
+        vipOrdersMock.expectedMessageCount(0);
+        standardOrdersMock.expectedMessageCount(1);
+        standardOrdersMock.expectedHeaderReceived("customerName", "Standard Customer");
+
+        String orderPayload = "[{\"orderId\":\"O-002\", \"customerId\":\"std456\", \"amount\":50.0}]";
+        java.io.File testFile = createTestFile("src/data/orders.in/std_order.json", orderPayload);
+
+        Thread.sleep(500);
+
+        vipOrdersMock.assertIsSatisfied();
+        standardOrdersMock.assertIsSatisfied();
+
+        String receivedBody = standardOrdersMock.getExchanges().get(0).getIn().getBody(String.class);
+        assertNotNull(receivedBody);
+        assertTrue(receivedBody.contains("O-002"));
+        assertTrue(standardOrdersMock.getExchanges().get(0).getIn().getHeader("customerName", String.class).equals("Standard Customer"));
+
+        testFile.delete();
+    }
+
+    // Helper method to create test files
+    private java.io.File createTestFile(String path, String content) throws java.io.IOException {
+        java.io.File dir = new java.io.File(path).getParentFile();
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        java.io.File file = new java.io.File(path);
+        try (java.io.FileWriter writer = new java.io.FileWriter(file)) {
+            writer.write(content);
+        }
+        return file;
+    }
+}
+```
+
+This example effectively tests the entire mainOrderProcessingRoute from file ingestion to JMS queue delivery, including the enrich and choice EIPs, while isolating external services using AdviceWith for predictable responses.
+
+**Scenario 2: Testing Conditional Routing with Error Handling**
+
+Let's test the Dead Letter Channel configured in our OrderProcessingRoute. We want to verify that if the external customer service call fails repeatedly, the message is correctly routed to the DLQ.
+
+We'll add a new when clause to our interceptSendToEndpoint for the customer service to simulate an error.
+
+```java
+package com.example.camel;
+
+// ... imports as above for FullOrderProcessingIntegrationTest
+
+@SpringBootTest
+@CamelSpringTest
+@ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
+public class ErrorHandlingIntegrationTest {
+
+    @Autowired
+    private CamelContext camelContext;
+
+    @Autowired
+    private ProducerTemplate producerTemplate;
+
+    @EndpointInject("mock:dlq")
+    private MockEndpoint dlqMock;
+
+    @BeforeEach
+    void setupMocksAndAdvice() throws Exception {
+        dlqMock.reset();
+
+        RouteDefinition routeDefinition = camelContext.getRouteDefinition("mainOrderProcessingRoute");
+
+        routeDefinition.adviceWith(camelContext, new RouteBuilder() {
+            @Override
+            public void configure() {
+                // Intercept calls to customer service and simulate an error for a specific customer ID
+                interceptSendToEndpoint("http://localhost:8082/customer/*")
+                    .skipSendToOriginalEndpoint()
+                    .choice()
+                        .when(header("CamelHttpUri").contains("customer/error123"))
+                            // Simulate an exception that will trigger the DLC
+                            .throwException(new RuntimeException("Simulated external service error"))
+                        .when(header("CamelHttpUri").contains("customer/vip123"))
+                            .setBody(constant("VIP Customer"))
+                        .otherwise()
+                            .setBody(constant("Standard Customer"));
+                    .end();
+
+                // Mock JMS queues so they don't interfere with DLQ testing
+                interceptSendToEndpoint("jms:queue:vipOrders")
+                    .skipSendToOriginalEndpoint()
+                    .to("mock:ignore"); // Send to a dummy mock endpoint
+                interceptSendToEndpoint("jms:queue:standardOrders")
+                    .skipSendToOriginalEndpoint()
+                    .to("mock:ignore");
+
+                // Mock Dead Letter Channel for verification
+                interceptSendToEndpoint("jms:queue:dlq")
+                    .skipSendToOriginalEndpoint()
+                    .to(dlqMock);
+            }
+        });
+    }
+
+    @Test
+    void testOrderSentToDLQOnError() throws Exception {
+        dlqMock.expectedMessageCount(1); // Expect one message to the DLQ
+        dlqMock.setResultWaitTime(5000); // Give enough time for redelivery attempts
+
+        // Order payload that will trigger the simulated error
+        String errorOrderPayload = "[{\"orderId\":\"O-ERR\", \"customerId\":\"error123\", \"amount\":200.0}]";
+        java.io.File testFile = createTestFile("src/data/orders.in/error_order.json", errorOrderPayload);
+
+        Thread.sleep(1000); // Allow time for file consumer and redelivery attempts
+
+        dlqMock.assertIsSatisfied(); // Assert that the message reached the DLQ
+
+        // Verify content in DLQ
+        String receivedBody = dlqMock.getExchanges().get(0).getIn().getBody(String.class);
+        assertNotNull(receivedBody);
+        assertTrue(receivedBody.contains("O-ERR"));
+
+        // Verify headers related to error handling (e.g., redelivery attempts)
+        Integer redeliveryCounter = dlqMock.getExchanges().get(0).getIn().getHeader("CamelRedeliveredCounter", Integer.class);
+        assertNotNull(redeliveryCounter);
+        // The DLC configuration is maximumRedeliveries(2), so it attempts 2 redeliveries before sending to DLQ.
+        // The original attempt + 2 redeliveries = 3 attempts in total before DLQ.
+        // Some systems count redeliveries as attempts AFTER the first, so 2 redeliveries means counter will be 2.
+        assertTrue(redeliveryCounter == 2); // Verify redelivery count
+
+        testFile.delete();
+    }
+
+    // Helper method to create test files (same as above)
+    private java.io.File createTestFile(String path, String content) throws java.io.IOException {
+        java.io.File dir = new java.io.File(path).getParentFile();
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        java.io.File file = new java.io.File(path);
+        try (java.io.FileWriter writer = new java.io.FileWriter(file)) {
+            writer.write(content);
+        }
+        return file;
+    }
+}
+```
+
+This test case directly verifies that our Dead Letter Channel configuration correctly catches exceptions that occur during an external service call and redirects the problematic message to the DLQ after exhausting redelivery attempts. This is crucial for ensuring the robustness of our E-commerce Order Processing system.
 
 ## <a name="chapter5"></a>Chapter 5: Spring Boot Integration, Configuration, and Monitoring
 
