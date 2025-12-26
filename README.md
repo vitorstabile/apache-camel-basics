@@ -79,7 +79,6 @@
    - [Chapter 3 - Part 5: Content-Based Router (CBR) for conditional order processing](#chapter3part5)
       - [Chapter 3 - Part 5.1: Understanding the Content-Based Router EIP](#chapter3part5.1)
       - [Chapter 3 - Part 5.2: Practical Examples and Demonstrations](#chapter3part5.2)
-      - [Chapter 3 - Part 5.3: Exercises and Practice Activities](#chapter3part5.3)
    - [Chapter 3 - Part 6: Recipient List for fanning out order notifications](#chapter3part6)
       - [Chapter 3 - Part 6.1: Understanding the Recipient List EIP](#chapter3part6.1)
       - [Chapter 3 - Part 6.2: Implementing Recipient List in Apache Camel](#chapter3part6.2)
@@ -4337,47 +4336,2806 @@ This output clearly shows each Exchange flowing through the ingestion and proces
 
 #### <a name="chapter3part1"></a>Chapter 3 - Part 1: Integrating with File Systems: `file` component for order imports
 
+Integrating with file systems is a foundational aspect of enterprise integration, serving as a common entry point for data ingestion, especially in scenarios involving batch processing, legacy system exports, or simple data exchanges. Many business processes still rely on files – whether CSVs, XMLs, flat files, or others – being dropped into a specific directory for consumption. Apache Camel’s file component offers a powerful and flexible solution for both consuming and producing files, allowing your integration routes to seamlessly interact with local or network file systems. In our "E-commerce Order Processing" case study, the file component will be instrumental for initially ingesting new order data that might arrive as batch files from external partners or older systems, providing a robust and configurable mechanism to pick up, process, and archive these order files.
+
 #### <a name="chapter3part1.1"></a>Chapter 3 - Part 1.1: The file Component: Core Concepts and Configuration
+
+The file component in Apache Camel provides a straightforward yet highly configurable way to interact with local file systems or network shares (via NFS, SMB, etc.). It can act as both a consumer (reading files from a directory) and a producer (writing files to a directory). Understanding its core principles and configuration options is key to building reliable file-based integrations.
+
+**Endpoint URI Structure**
+
+Like all Camel components, the file component uses a URI to define its endpoint. The basic structure is:
+
+**file:directoryName[?options]**
+
+- directoryName: The path to the directory Camel should monitor or write to. This can be an absolute or relative path.
+- options: A series of key-value pairs separated by & that configure the component's behavior.
+
+Let's explore common options for both consumer and producer roles.
+
+**File Consumer Options**
+
+When the file component acts as a consumer, it monitors a specified directory for new or updated files. Its primary role is to create an Exchange for each detected file, making its content available to the Camel route.
+
+Here are some essential consumer options:
+
+- delete (default: true): Determines if the file should be deleted after it has been successfully processed.
+  - true: The file is deleted.
+  - false: The file is not deleted. If noop is also false, this can lead to infinite reprocessing. Often used with move or idempotent consumer pattern.
+- noop (default: false): Prevents the file from being deleted or moved after processing. The file stays in its original location.
+  - true: The file remains in place. Useful when an external system needs the file to remain available, or when combined with a robust idempotency strategy.
+  - false: Default behavior, implies delete=true unless move is specified.
+- move: Specifies a directory to move the file to after successful processing. This is a common alternative to deletion for archiving. Example: file:inbox?move=archive.
+- moveFailed: Specifies a directory to move the file to if an error occurs during processing. This is crucial for error handling, allowing manual inspection of problematic files. Example: file:inbox?moveFailed=error.
+- include: A regular expression to filter which files to include based on their name. Only files matching the regex will be consumed. Example: file:inbox?include=.*\\.csv$.
+- exclude: A regular expression to filter which files to exclude. Files matching this regex will not be consumed. Example: file:inbox?exclude=.*\\.tmp$.
+- recursive (default: false): If true, the consumer will recursively scan subdirectories for files.
+- delay (default: 500ms): The interval in milliseconds between polling the directory for new files. Example: file:inbox?delay=5000 (poll every 5 seconds).
+- readLock (default: none): Defines how Camel ensures exclusive access to a file while reading it, preventing other processes (or other Camel consumers) from interfering. This is critical for robust enterprise integrations.
+  - none: No locking. Use with caution.
+  - fileLock: Uses java.nio.channels.FileLock (JVM-level lock). Not reliable across different JVMs or OSes.
+  - rename: Renames the file during processing, then renames it back (or deletes/moves it). This is a very common and robust strategy for single-consumer scenarios on the same file system, as other processes won't see the original file name.
+  - exclusive: Attempts to acquire an exclusive lock on the file.
+  - markerFile: Creates a marker file (e.g., filename.camelLock) when processing starts and deletes it when finished.
+- charset (default: UTF-8): The character set to use when reading the file content.
+
+When a file is consumed, Camel automatically adds several headers to the Exchange Message, providing metadata about the file, such as:
+
+- CamelFileName: The name of the file.
+- CamelFileLength: The size of the file in bytes.
+- CamelFileAbsolutePath: The absolute path to the file.
+- CamelFileLastModified: The last modified timestamp of the file.
+
+**File Producer Options**
+
+When the file component acts as a producer, it writes the message body of an Exchange to a file in a specified directory.
+
+Here are some essential producer options:
+
+- fileName: Specifies the name of the output file. If not provided, Camel generates a unique file name using a timestamp. You can use expressions here, like ${header.CamelFileName} to retain the original input file name, or ${date:now:yyyyMMddHHmmss}.txt for a timestamped name.
+- fileExist (default: Override): How to handle existing files with the same name.
+  - Override: Overwrites the existing file.
+  - Append: Appends to the existing file.
+  - Fail: Throws an exception if the file exists.
+  - Ignore: Does nothing if the file exists. 
+- tempFileName: If specified, Camel first writes the content to a temporary file (e.g., myFile.tmp) and then renames it to the final fileName after the write is complete. This ensures atomic writes, meaning other processes won't try to read incomplete files. Example: file:outbox?fileName=order.txt&tempFileName=order.tmp.
+- charset (default: UTF-8): The character set to use when writing the file content.
 
 #### <a name="chapter3part1.2"></a>Chapter 3 - Part 1.2: Practical Order Import Examples with file Component
 
+Let's integrate the file component into our "E-commerce Order Processing" case study. We'll simulate receiving new order data as files dropped into an input directory.
+
+First, ensure you have a Spring Boot application set up with Apache Camel dependencies. If you're following from Module 1 and 2, you should already have camel-spring-boot-starter and camel-file on your classpath.
+
+```xml
+<!-- pom.xml snippet -->
+<dependency>
+    <groupId>org.apache.camel.springboot</groupId>
+    <artifactId>camel-spring-boot-starter</artifactId>
+    <version>${camel.version}</version>
+</dependency>
+<dependency>
+    <groupId>org.apache.camel</groupId>
+    <artifactId>camel-file</artifactId>
+    <version>${camel.version}</version>
+</dependency>
+```
+
+Next, let's create a directory structure. In your project root, create data/inbox, data/archive, and data/error directories.
+
+**Scenario 1: Basic Order File Ingestion**
+
+This example demonstrates a basic route that consumes files from an inbox directory and logs their content. By default, the file component will delete files after successful processing.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class BasicOrderFileRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Route to consume order files from 'data/inbox'
+        from("file:data/inbox")
+            .routeId("basic-order-file-consumer")
+            // Log the file name and its content.
+            // By default, the 'file' component deletes the file after successful processing.
+            .log("Received order file: ${header.CamelFileName}. Content:\n${body}");
+    }
+}
+```
+
+To test this:
+
+- Run your Spring Boot application.
+- Create a text file named order1.txt inside the data/inbox directory with some content, e.g., Order ID: 12345, Customer: John Doe, Items: 2, Total: 50.00.
+- Observe your application logs. You should see a log entry indicating the file was received and processed.
+- Check the data/inbox directory; order1.txt should be gone (deleted by default).
+
+**Scenario 2: Robust Order Processing with Archiving and Error Handling**
+
+For real-world e-commerce order processing, you often don't want to simply delete files. Instead, you might want to:
+
+- Move successfully processed files to an archive directory.
+- Move failed files to an error directory for manual inspection.
+- Ensure only specific file types (e.g., .csv) are processed.
+- Use a robust read lock to prevent partial reads or concurrency issues.
+- Simulate some processing using a Processor (as covered in Module 2).
+
+Let's enhance the route:
+
+```java
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class RobustOrderFileRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Define a simple processor to simulate order processing
+        Processor orderProcessor = exchange -> {
+            String fileName = exchange.getIn().getHeader(Exchange.FILE_NAME, String.class);
+            String fileContent = exchange.getIn().getBody(String.class);
+
+            // Simulate some business logic, e.g., parsing, validation
+            if (fileContent != null && fileContent.contains("INVALID")) {
+                // Simulate an error condition
+                throw new IllegalStateException("Order file contains 'INVALID' data: " + fileName);
+            }
+
+            // Add a header indicating processing
+            exchange.getIn().setHeader("ProcessedOrder", true);
+            exchange.getIn().setBody("Processed: " + fileContent); // Modify body for demonstration
+            log.info("Successfully processed order file: {}", fileName);
+        };
+
+        // Configure an error handler for this route (local to this route for simplicity now)
+        // More advanced error handling is covered in Module 4.
+        onException(IllegalStateException.class)
+            .handled(true) // Mark exception as handled so it doesn't propagate
+            .log("Error processing file: ${header.CamelFileName}. Moving to error directory.")
+            .to("file:data/error") // Move the failed file to the 'data/error' directory
+            .end();
+
+        // Route to consume order files from 'data/inbox' with advanced options
+        from("file:data/inbox?" +
+             "include=.*\\.csv&" + // Only process .csv files
+             "move=data/archive&" + // Move successfully processed files to 'data/archive'
+             "moveFailed=data/error&" + // Move files that cause an exception to 'data/error'
+             "readLock=rename&" + // Use rename strategy for robust reading
+             "delay=2000") // Poll every 2 seconds
+            .routeId("robust-order-file-consumer")
+            .log("Attempting to process order file: ${header.CamelFileName}")
+            .process(orderProcessor) // Apply our simulated order processing logic
+            .log("Order file ${header.CamelFileName} successfully archived.");
+    }
+}
+```
+
+To test this:
+
+- Make sure your data/inbox, data/archive, and data/error directories are clean.
+- Run the application.
+- Test success: Create order2.csv in data/inbox with content: Order ID: 67890, Customer: Jane Doe, Items: 1, Total: 25.50.
+  - Observe logs: File processed, moved to data/archive.
+  - Check data/archive: order2.csv should be there.
+  - Check data/inbox: order2.csv should be gone.
+- Test failure: Create order3_invalid.csv in data/inbox with content: Order ID: 112233, Customer: Peter Pan, INVALID Item, Total: 99.99.
+  - Observe logs: Error logged, file moved to data/error.
+  - Check data/error: order3_invalid.csv should be there.
+  - Check data/inbox: order3_invalid.csv should be gone.
+- Test include filter: Create config.xml in data/inbox. It should be ignored and remain in data/inbox.
+
+**Scenario 3: Writing Processed Orders to Another File (Producer Role)**
+
+After an order file is consumed and processed, you might want to write its transformed or processed state to another file for further steps in the workflow, perhaps for another system to pick up. Here, we'll extend the previous example to write the "processed" message body to a new file in an outbox directory.
+
+First, create a data/outbox directory.
+
+```java
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class ProcessedOrderFileWriterRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        Processor orderProcessor = exchange -> {
+            String fileName = exchange.getIn().getHeader(Exchange.FILE_NAME, String.class);
+            String fileContent = exchange.getIn().getBody(String.class);
+
+            if (fileContent != null && fileContent.contains("INVALID")) {
+                throw new IllegalStateException("Order file contains 'INVALID' data: " + fileName);
+            }
+
+            // Simulate parsing and transforming to a canonical format, e.g., JSON
+            String processedContent = "{ \"orderId\": \"" + fileName.split("\\.")[0] + "\", \"status\": \"processed\", \"originalContent\": \"" + fileContent.replace("\"", "\\\"") + "\" }";
+            exchange.getIn().setBody(processedContent);
+            log.info("Successfully processed and transformed order file: {}", fileName);
+        };
+
+        onException(IllegalStateException.class)
+            .handled(true)
+            .log("Error processing file: ${header.CamelFileName}. Moving to error directory.")
+            .to("file:data/error")
+            .end();
+
+        from("file:data/inbox?" +
+             "include=.*\\.csv&" +
+             "move=data/archive&" +
+             "moveFailed=data/error&" +
+             "readLock=rename&" +
+             "delay=2000")
+            .routeId("file-to-file-order-processor")
+            .log("Attempting to process order file: ${header.CamelFileName}")
+            .process(orderProcessor) // Apply processing and transformation
+            .to("file:data/outbox?fileName=${header.CamelFileName}.json") // Write the transformed message to 'data/outbox' with a new name
+            .log("Transformed order for ${header.CamelFileName} written to data/outbox and original archived.");
+    }
+}
+```
+
+To test this:
+
+- Ensure all data directories are clean.
+- Run the application.
+- Create order4.csv in data/inbox with content: Order ID: 98765, Customer: Alice Wonderland, Items: 3, Total: 120.00.
+  - Observe logs: File processed, transformed, written to data/outbox, original moved to data/archive.
+  - Check data/archive: order4.csv should be there.
+  - Check data/outbox: A new file, order4.csv.json, should be created with the transformed JSON content.
+  - Check data/inbox: order4.csv should be gone.
+
+This demonstrates how the file component can be used in both consumer and producer roles within a single route, orchestrating a file-based workflow for our e-commerce system.
+
 #### <a name="chapter3part2"></a>Chapter 3 - Part 2: Messaging with JMS/ActiveMQ: `jms` component for asynchronous processing
+
+Enterprise integration often involves systems that operate at different speeds or require robust handling of messages to ensure delivery and decouple components. Asynchronous messaging plays a crucial role in achieving this, allowing senders to dispatch messages without waiting for an immediate response, and receivers to process messages when they are ready. This pattern enhances system scalability, resilience, and responsiveness. In the context of Apache Camel, the jms component provides a powerful and flexible way to integrate with Java Message Service (JMS) compliant message brokers like ActiveMQ, enabling reliable, asynchronous communication across disparate systems. Leveraging JMS allows our integration solutions to handle temporary failures, manage varying load, and provide guaranteed message delivery, which are essential for robust enterprise applications.
 
 #### <a name="chapter3part2.1"></a>Chapter 3 - Part 2.1: Understanding Asynchronous Messaging with JMS and ActiveMQ
 
+Asynchronous messaging is a communication paradigm where the sender and receiver of a message do not need to interact with the message at the same time. The sender dispatches a message to a messaging system (a message broker), and then continues its operations without waiting for the receiver to consume the message. The message broker stores the message until a receiver becomes available to process it. This fundamentally decouples the communicating parties, providing significant benefits in distributed systems.
+
+**Key Benefits of Asynchronous Messaging:**
+
+- **Decoupling**: Senders and receivers are independent. They don't need to be online simultaneously, reducing dependencies and allowing systems to evolve independently. This is a core tenet of many Enterprise Integration Patterns (EIPs) we've discussed.
+- **Reliability**: Message brokers often provide mechanisms like persistence and acknowledgments to ensure messages are not lost, even if a consumer fails or the broker restarts.
+- **Scalability**: Message queues can absorb bursts of traffic, acting as a buffer. Consumers can be scaled horizontally to handle increased load, processing messages in parallel.
+- **Responsiveness**: Senders don't block waiting for a response, leading to faster initial processing times for requests.
+
+**JMS (Java Message Service)**: JMS is a Java API that provides a common way for Java applications to create, send, receive, and read messages. It defines a set of interfaces and associated semantics for message exchange, making it vendor-neutral. This means you can write your application using JMS, and then choose a JMS provider (like ActiveMQ, RabbitMQ with JMS plugin, IBM MQ, etc.) without changing your application code.
+
+JMS defines two primary messaging models:
+
+- **Point-to-Point (Queues)**: Messages are sent to a queue. Each message is consumed by only one consumer, even if multiple consumers are listening to the same queue. This is ideal for task distribution and workload balancing.
+- **Publish/Subscribe (Topics)**: Messages are sent to a topic. Each message can be consumed by multiple subscribers. This is useful for broadcasting information to multiple interested parties.
+
+**Apache ActiveMQ**: Apache ActiveMQ is a popular, open-source, JMS-compliant message broker. It is widely used for its robust features, high performance, and ease of use. ActiveMQ supports various protocols beyond JMS, including AMQP, STOMP, MQTT, and WebSockets, making it a versatile choice for many integration scenarios. For our Camel applications, ActiveMQ serves as an excellent choice for implementing asynchronous messaging.
+
 #### <a name="chapter3part2.2"></a>Chapter 3 - Part 2.2: Integrating with JMS/ActiveMQ using Camel's jms Component
+
+Camel's jms component is a powerful and highly configurable way to interact with any JMS-compliant message broker, including ActiveMQ. It abstracts away much of the underlying JMS API complexities, allowing you to define JMS producers and consumers directly within your Camel routes using the familiar Endpoint URI syntax.
+
+To use the jms component with Spring Boot, you'll typically need the camel-jms-starter dependency and a JMS client library (like activemq-broker or activemq-client).
+
+**Setting up ActiveMQ and Dependencies**
+
+First, let's ensure our Spring Boot application has the necessary dependencies.
+
+```xml
+<dependencies>
+    <!-- Spring Boot Starter for Camel -->
+    <dependency>
+        <groupId>org.apache.camel.springboot</groupId>
+        <artifactId>camel-spring-boot-starter</artifactId>
+    </dependency>
+
+    <!-- Camel JMS Starter -->
+    <dependency>
+        <groupId>org.apache.camel.springboot</groupId>
+        <artifactId>camel-jms-starter</artifactId>
+    </dependency>
+
+    <!-- ActiveMQ Broker (for embedded broker or client) -->
+    <dependency>
+        <groupId>org.apache.activemq</groupId>
+        <artifactId>activemq-broker</artifactId>
+        <scope>runtime</scope> <!-- Or without scope if using embedded broker programmatically -->
+    </dependency>
+
+    <!-- For logging -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-logging</artifactId>
+    </dependency>
+
+    <!-- For testing -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+```
+
+For development, you can easily embed an ActiveMQ broker directly within your Spring Boot application or run it as a standalone process. For this lesson, we will assume ActiveMQ is running, either embedded or externally on tcp://localhost:61616.
+
+In your application.properties (or application.yml), you can configure the JMS connection factory. Camel will automatically pick up a ConnectionFactory bean if it's available in the Spring context.
+
+```
+# application.properties
+# Spring Boot ActiveMQ Auto-configuration (optional, Camel can use its own)
+# spring.activemq.broker-url=tcp://localhost:61616
+# spring.activemq.in-memory=true # For an in-memory broker, useful for testing
+
+# Camel JMS component configuration
+# Define a connection factory for Camel's JMS component to use
+# This instructs Camel to use a specific connection factory named 'myJmsConnectionFactory'
+# which would be a bean defined in your Spring configuration.
+# If no specific connectionFactory is defined, Camel looks for a default Spring managed
+# JmsConnectionFactory or an ActiveMQConnectionFactory.
+camel.component.jms.connection-factory=myJmsConnectionFactory
+```
+
+Or, you can define the ConnectionFactory as a Spring @Bean:
+
+```java
+import org.apache.activemq.ActiveMQConnectionFactory;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jms.connection.CachingConnectionFactory;
+
+@Configuration
+public class JmsConfig {
+
+    @Bean
+    public ActiveMQConnectionFactory activeMQConnectionFactory() {
+        ActiveMQConnectionFactory connectionFactory = new ActiveMQConnectionFactory();
+        // Typically, the broker URL comes from configuration (e.g., application.properties)
+        connectionFactory.setBrokerURL("tcp://localhost:61616");
+        // Optional: configure user/password if your broker requires it
+        // connectionFactory.setUserName("admin");
+        // connectionFactory.setPassword("admin");
+        return connectionFactory;
+    }
+
+    @Bean
+    public CachingConnectionFactory myJmsConnectionFactory(ActiveMQConnectionFactory activeMQConnectionFactory) {
+        // CachingConnectionFactory improves performance by caching sessions and producers
+        CachingConnectionFactory cachingConnectionFactory = new CachingConnectionFactory(activeMQConnectionFactory);
+        cachingConnectionFactory.setSessionCacheSize(10); // Number of sessions to cache
+        return cachingConnectionFactory;
+    }
+}
+```
+
+In this setup, camel.component.jms.connection-factory=myJmsConnectionFactory tells Camel to use the CachingConnectionFactory bean named myJmsConnectionFactory for all jms component endpoints unless overridden.
+
+**jms Component Endpoint URI Syntax**
+
+The basic URI for the jms component follows this pattern:
+
+**jms:destinationType:destinationName[?options]**
+
+- destinationType: Optional. Can be queue or topic. If omitted, Camel defaults to queue.
+- destinationName: The name of the JMS queue or topic.
+- options: Various parameters to configure the JMS producer or consumer behavior.
+
+**Examples:**
+
+- jms:myQueue: Consumes from or produces to a queue named myQueue.
+- jms:queue:anotherQueue: Explicitly specifies a queue named anotherQueue.
+- jms:topic:myTopic: Consumes from or produces to a topic named myTopic.
+- jms:queue:orderQueue?transacted=true: Uses a transacted session for the queue orderQueue.
+
+**Producing Messages to a JMS Queue**
+
+Let's create a Camel route that produces messages to a JMS queue. We'll use our "E-commerce Order Processing" case study. After an order file is imported (as in the previous lesson), instead of processing it synchronously, we'll send it to an orderProcessingQueue for asynchronous handling.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderProducerRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Route 1: Simulate order ingestion from a file and send to JMS queue
+        from("file:src/data/inbox?noop=true") // Consumes files from inbox
+            .routeId("fileToJmsOrderProducer")
+            .log("Received new order file: ${file:name}")
+            .convertBodyTo(String.class, "UTF-8") // Ensure body is String
+            // Send the order content as a message to the 'orderProcessingQueue'
+            // The 'jms' component will use the connection factory configured in JmsConfig.java
+            .to("jms:queue:orderProcessingQueue")
+            .log("Order ${file:name} sent to orderProcessingQueue for asynchronous processing.")
+            .end();
+    }
+}
+```
+
+**Explanation:**
+
+- from("file:src/data/inbox?noop=true"): This is our consumer endpoint, familiar from the previous lesson. It monitors a directory for new files (acting as order inputs). noop=true means files are not moved or deleted after consumption, useful for testing.
+- .routeId("fileToJmsOrderProducer"): Assigns a unique ID to the route for easier monitoring and management.
+- .log("Received new order file: ${file:name}"): Logs the name of the file being processed.
+- .convertBodyTo(String.class, "UTF-8"): Ensures the file content (the order data) is converted to a UTF-8 String, which is a common and appropriate format for JMS message bodies.
+- .to("jms:queue:orderProcessingQueue"): This is the producer endpoint. It sends the current message body (the order content) to a JMS queue named orderProcessingQueue. Camel handles the creation of a MessageProducer and sending the TextMessage.
+
+To test this, place a simple text file (e.g., order1.txt with content "Order ID: 123, Item: Laptop, Quantity: 1") into src/data/inbox. Camel will pick it up and send its content to the ActiveMQ queue. You can then use ActiveMQ's web console (typically http://localhost:8161/admin) to verify that a message has arrived in the orderProcessingQueue.
+
+**Consuming Messages from a JMS Queue**
+
+Now, let's create another Camel route that consumes messages from the orderProcessingQueue. This simulates a separate backend service that picks up orders for fulfillment.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderConsumerRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Route 2: Consume messages from the 'orderProcessingQueue'
+        from("jms:queue:orderProcessingQueue")
+            .routeId("jmsToOrderProcessor")
+            .log("Received order for processing: ${body}")
+            // Here, you would typically integrate with another service, database, or process
+            // For example, calling a database component (jdbc) which will be covered next
+            // .to("jdbc:dataSource?statement=INSERT INTO orders (data) VALUES (?)")
+            .to("log:com.example.OrderProcessor?level=INFO&showBody=true&showHeaders=true") // Log detailed message
+            .log("Order processed successfully: ${body.substring(0,20)}...") // Log confirmation
+            .end();
+    }
+}
+```
+
+**Explanation:**
+
+- from("jms:queue:orderProcessingQueue"): This is the consumer endpoint. Camel will set up a MessageConsumer to listen for new messages on orderProcessingQueue. When a message arrives, it will be wrapped in a Camel Exchange and delivered to this route.
+- .log("Received order for processing: ${body}"): Logs the content of the received message. Note how body refers directly to the JMS message body.
+- .to("log:com.example.OrderProcessor?level=INFO&showBody=true&showHeaders=true"): A more detailed logging endpoint, showing both the message body and any headers present.
+- .log("Order processed successfully: ${body.substring(0,20)}..."): Confirms processing.
+
+When this consumer route is running, any message sent to orderProcessingQueue by the OrderProducerRoute (or any other sender) will be picked up and processed by this route. This demonstrates the asynchronous, decoupled nature of JMS messaging.
+
+**Handling Message Headers and Properties**
+
+JMS messages can have properties (key-value pairs) in addition to their body. Camel maps JMS properties to Camel message headers. This allows you to pass metadata along with your message.
+
+Let's modify our producer to add a custom header and then verify it in the consumer.
+
+**Modified OrderProducerRoute:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderProducerRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        from("file:src/data/inbox?noop=true")
+            .routeId("fileToJmsOrderProducer")
+            .log("Received new order file: ${file:name}")
+            .convertBodyTo(String.class, "UTF-8")
+            // Set a custom header named 'orderSource'
+            .setHeader("orderSource", constant("file-import"))
+            // Set another header for the order ID, perhaps parsed from filename or content
+            .setHeader("orderId", simple("${file:name.noext}"))
+            .to("jms:queue:orderProcessingQueue")
+            .log("Order ${header.orderId} from ${header.orderSource} sent to orderProcessingQueue.")
+            .end();
+    }
+}
+```
+
+**Modified OrderConsumerRoute:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderConsumerRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        from("jms:queue:orderProcessingQueue")
+            .routeId("jmsToOrderProcessor")
+            .log("Received order for processing (ID: ${header.orderId}, Source: ${header.orderSource}): ${body}")
+            // You can also use when().header() for content-based routing based on headers,
+            // which will be covered more deeply in the Content-Based Router lesson.
+            .choice()
+                .when(header("orderSource").isEqualTo("file-import"))
+                    .log("This order originated from a file import.")
+                .otherwise()
+                    .log("This order has an unknown origin.")
+            .end()
+            .to("log:com.example.OrderProcessor?level=INFO&showBody=true&showHeaders=true")
+            .log("Order (ID: ${header.orderId}) processed successfully.")
+            .end();
+    }
+}
+```
+
+Now, when an order file is processed, it will arrive in the orderProcessingQueue with orderSource and orderId JMS properties, which Camel maps to headers, making them accessible via header.orderSource and header.orderId in the consumer route. This mechanism is vital for passing contextual information without polluting the message body.
+
+**Advanced jms Component Options**
+
+The jms component offers many options to fine-tune its behavior. Here are a few important ones:
+
+- transacted=true: Enables JMS local transactions. Messages sent and received within a transacted session are part of a single atomic unit of work. If the route fails before completion, the transaction can be rolled back, ensuring the message is redelivered.
+  - Example: from("jms:queue:orderQueue?transacted=true")
+- acknowledgementModeName: Specifies how messages are acknowledged. Common values are CLIENT_ACKNOWLEDGE (application acknowledges), AUTO_ACKNOWLEDGE (session automatically acknowledges), DUPS_OK_ACKNOWLEDGE (lazy acknowledgment, higher throughput, lower guarantee). Default is usually AUTO_ACKNOWLEDGE.
+  - Example: from("jms:queue:auditLog?acknowledgementModeName=CLIENT_ACKNOWLEDGE")
+- destination.consumer.retroactive=true: For topics, this allows a new durable subscriber to receive messages that were sent before it subscribed (if the broker supports it and the messages were persisted).
+  - Example: from("jms:topic:criticalAlerts?destination.consumer.retroactive=true")
+- mapJmsMessage=false: By default, Camel tries to convert JMS messages to a generic org.apache.camel.Message. Setting this to true (or leaving default) means it will try to map the JMS Message body to a more specific type (e.g., TextMessage to String). Setting it to false would give you the raw JMS Message object, allowing for custom processing.
+- concurrentConsumers: For consumers, this specifies the number of concurrent consumers to use for the queue/topic. This is a crucial setting for scaling your message processing.
+  - Example: from("jms:queue:orderProcessingQueue?concurrentConsumers=5") would allow 5 threads to concurrently consume messages from the queue.
+ 
+Understanding these options allows for robust and performant integration with JMS.
 
 #### <a name="chapter3part2.3"></a>Chapter 3 - Part 2.3: Case Study: E-commerce Order Processing with Asynchronous Messaging
 
+Let's integrate asynchronous messaging into our E-commerce Order Processing case study.
+
+**Scenario**: Previously, we ingested order files. Now, we want to ensure that once an order file is received, its processing (like validation, enrichment, and persistence) happens asynchronously to avoid blocking the file ingestion process. Furthermore, we want to notify various internal systems (e.g., inventory, shipping) that a new order has been received, possibly via a topic.
+
+**Implementation Steps:**
+
+- Order Ingestion to Queue: Modify the file ingestion route to send the raw order data to a jms:queue:newOrderQueue. This decouples file reading from order processing.
+- Order Processing from Queue: Create a new route that consumes from jms:queue:newOrderQueue. This route will represent the core order processing logic. For now, it will just log the order.
+- Order Notification to Topic (Publish/Subscribe): After an order is "processed" (or at least received for processing), publish a simplified order notification message to a jms:topic:orderNotifications.
+- Notification Subscribers: Create one or more routes that subscribe to jms:topic:orderNotifications to simulate different systems reacting to new orders.
+
+**Step 1 & 2: Order Ingestion to Queue & Processing from Queue**
+
+These are largely what we've already demonstrated.
+
+**OrderIngestionRoute.java:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderIngestionRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        from("file:src/data/inbox?fileName=order-input.txt&noop=true&initialDelay=5s&delay=10s")
+            .routeId("fileToNewOrderQueue")
+            .log("New order file detected: ${file:name}")
+            .convertBodyTo(String.class, "UTF-8")
+            // Set a unique correlation ID for the order
+            .setHeader("CamelCorrelationId", simple("ORDER-${date:now:yyyyMMddHHmmssSSS}-${random(1000,9999)}"))
+            .log("Sending order ${header.CamelCorrelationId} to newOrderQueue.")
+            .to("jms:queue:newOrderQueue") // Send to a dedicated queue for new orders
+            .log("Order file ${file:name} sent to newOrderQueue.");
+    }
+}
+```
+
+**NewOrderProcessorRoute.java:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class NewOrderProcessorRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        from("jms:queue:newOrderQueue")
+            .routeId("newOrderQueueToProcessor")
+            .log("Processing order ${header.CamelCorrelationId} from newOrderQueue: ${body}")
+            // Simulate some processing time
+            .delay(2000)
+            // After processing, send a simplified notification to a topic
+            .transform(simple("Order ${header.CamelCorrelationId} received and being processed.")) // Create simplified notification
+            .to("jms:topic:orderNotifications") // Publish notification to a topic
+            .log("Order ${header.CamelCorrelationId} processed and notification sent to orderNotifications topic.")
+            .end();
+    }
+}
+```
+
+**Step 3 & 4: Order Notification to Topic & Subscribers**
+
+Now let's create routes that subscribe to the orderNotifications topic.
+
+**InventorySystemSubscriberRoute.java:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class InventorySystemSubscriberRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        from("jms:topic:orderNotifications?clientId=inventorySystem&durableSubscriptionName=inventoryOrders")
+            .routeId("inventorySystemOrderSubscriber")
+            .log("Inventory System received notification: ${body}")
+            // Simulate updating inventory
+            .delay(1000)
+            .log("Inventory updated for order from notification: ${body}");
+    }
+}
+```
+
+**ShippingSystemSubscriberRoute.java:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class ShippingSystemSubscriberRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        from("jms:topic:orderNotifications?clientId=shippingSystem&durableSubscriptionName=shippingOrders")
+            .routeId("shippingSystemOrderSubscriber")
+            .log("Shipping System received notification: ${body}")
+            // Simulate initiating shipping process
+            .delay(1500)
+            .log("Shipping process initiated for order from notification: ${body}");
+    }
+}
+```
+
+**Explanation:**
+
+- jms:topic:orderNotifications: This is the key. Messages sent here are delivered to all active subscribers.
+- clientId=inventorySystem&durableSubscriptionName=inventoryOrders: For topics, to ensure that a subscriber receives all messages even if it's offline, a durable subscription is required. This means the message broker will store messages for the named durable subscription until the subscriber comes back online to retrieve them.
+  - clientId uniquely identifies the client application.
+  - durableSubscriptionName uniquely identifies the durable subscription for that client ID.
+  - Important: Each durable subscriber must have a unique combination of clientId and durableSubscriptionName. If you run two instances of InventorySystemSubscriberRoute with the same clientId and durableSubscriptionName, only one will be active at a time. For multiple instances to receive copies, they would need unique clientIds and durableSubscriptionNames, or you would use non-durable subscriptions for each instance, meaning they only receive messages while active.
+ 
+This case study demonstrates the power of JMS for both reliable point-to-point communication (queues) and flexible publish-subscribe communication (topics), enabling robust and scalable enterprise integration patterns within our E-commerce system.
+
 #### <a name="chapter3part3"></a>Chapter 3 - Part 3: Consuming and Producing REST APIs: `http` and `rest` components for external services
+
+Integrating with external services via REST APIs is a cornerstone of modern enterprise applications. In a microservices landscape, applications frequently need to communicate with other services, whether internal or external partners, to fulfill business processes. Apache Camel, with its extensive component library, provides powerful and flexible ways to interact with these RESTful endpoints, acting as both a client (consuming services) and a server (producing/exposing services). Understanding how to effectively use Camel's http and rest components is crucial for building robust, interconnected systems, enabling your integration solutions to interact seamlessly with the broader digital ecosystem, such as fetching data from a third-party CRM, submitting orders to a payment gateway, or exposing an API for partners to query order status.
 
 #### <a name="chapter3part3.1"></a>Chapter 3 - Part 3.1: Understanding HTTP Communication in Apache Camel
 
+At its core, interacting with REST APIs often involves making HTTP requests. Apache Camel provides the http component (and its variations like http4 for older versions, though http is the modern alias for camel-http-client) for direct, low-level HTTP client operations. This component allows you to send and receive raw HTTP messages, giving you fine-grained control over the request and response.
+
+**The http Component: Low-Level HTTP Client**
+
+The http component is designed for straightforward HTTP interactions where you might need to specify every detail of the HTTP request. It acts as an HTTP client, sending requests to external HTTP endpoints.
+
+**Key Features:**
+
+- **Direct URL Specification**: You specify the full HTTP URL, including host, port, path, and potentially query parameters.
+- **Method Flexibility**: Supports all standard HTTP methods (GET, POST, PUT, DELETE, etc.) via message headers.
+- **Header Manipulation**: Allows setting and reading HTTP headers directly on the Camel Message.
+- **Body Handling**: Transmits the Camel Message body as the HTTP request body and places the HTTP response body into the Camel Message body.
+
+**Consuming an External Service with http (Client Side)**
+
+When using the http component as a consumer (client), your Camel route will send an HTTP request to an external service. The results of that external call will then be processed further in your route.
+
+**Basic GET Request Example**: Let's say our E-commerce Order Processing system needs to check a product's stock availability from an external Inventory Service. This service exposes a GET endpoint: /inventory/products/{productId}.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class InventoryCheckRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        from("direct:checkProductStock")
+            .to("log:InventoryChecker?showHeaders=true")
+            // Set the product ID dynamically, assuming it comes in the body
+            // e.g., body contains "PROD123"
+            .setHeader("productId", body())
+            // Construct the HTTP GET request to the external inventory service
+            // The 'http' component acts as a client.
+            // Replace 'localhost:8081' with the actual inventory service host:port
+            .toD("http://localhost:8081/inventory/products/${header.productId}?throwExceptionOnFailure=false")
+            // log the response from the external service
+            .log("Response from Inventory Service: ${body} with status ${header.CamelHttpResponseCode}")
+            // Process the response, e.g., check stock level
+            .choice()
+                .when(header("CamelHttpResponseCode").isEqualTo(200))
+                    .unmarshal().json() // Assuming JSON response, unmarshal it to map
+                    .log("Successfully retrieved stock for ${header.productId}: ${body[stockLevel]} units")
+                    // Further processing based on stock level
+                .otherwise()
+                    .log("Failed to retrieve stock for ${header.productId}. Status: ${header.CamelHttpResponseCode}")
+            .end();
+    }
+}
+```
+
+**Explanation:**
+
+- from("direct:checkProductStock"): This is a direct endpoint for internal calls to trigger this route. In a real scenario, this could be triggered by an order processing route.
+- .setHeader("productId", body()): We set a header productId from the incoming message body. This makes the product ID available for dynamic URL construction.
+- .toD("http://localhost:8081/inventory/products/${header.productId}?throwExceptionOnFailure=false"): This is the core of consuming the REST API.
+  - toD: The dynamic to endpoint allows the URI to be built using expressions (e.g., ${header.productId}).
+  - http://localhost:8081/inventory/products/${header.productId}: The target HTTP endpoint. Camel will perform a GET request by default for this URI.
+  - throwExceptionOnFailure=false: This parameter is crucial. By default, the http component throws an HttpOperationFailedException for HTTP status codes 300 and above. Setting this to false prevents the exception and allows the route to continue, placing the HTTP status code in the CamelHttpResponseCode header and the error body (if any) in the message body. This enables the choice block to handle different HTTP responses gracefully.
+- .log(...): Logs the response body and the HTTP status code.
+- .choice().when(...): Demonstrates handling different HTTP response codes. If the status is 200, we unmarshal the JSON response and log the stock level. Otherwise, we log an error.
+
+**POST Request Example with Request Body and Headers**: Now, let's consider sending an order confirmation to an external analytics service. This service expects a JSON payload and a specific API key in a header for a POST request: /analytics/orders.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.model.dataformat.JsonLibrary;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Component
+public class OrderConfirmationRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        from("direct:sendOrderConfirmation")
+            .to("log:OrderConfirmationSender?showHeaders=true")
+            // Assume the incoming body is a Map or a POJO representing the order details
+            // For this example, let's simulate creating a JSON body.
+            // In a real scenario, this JSON would be built from the incoming message.
+            .process(exchange -> {
+                Map<String, Object> orderDetails = new HashMap<>();
+                orderDetails.put("orderId", exchange.getIn().getBody(String.class)); // Assuming order ID comes in as String body
+                orderDetails.put("status", "CONFIRMED");
+                orderDetails.put("timestamp", System.currentTimeMillis());
+                exchange.getIn().setBody(orderDetails);
+            })
+            .marshal().json(JsonLibrary.Jackson) // Convert map to JSON string
+            // Set required HTTP headers
+            .setHeader("Content-Type", constant("application/json")) // Important for POST requests with JSON body
+            .setHeader("X-API-Key", constant("YOUR_SECRET_API_KEY")) // Custom API key header
+            .setHeader("CamelHttpMethod", constant("POST")) // Explicitly set HTTP method to POST
+            // Send the POST request to the external analytics service
+            .to("http://localhost:8082/analytics/orders?throwExceptionOnFailure=false")
+            // Log the response
+            .log("Order confirmation sent to Analytics Service. Response: ${body} with status ${header.CamelHttpResponseCode}")
+            .choice()
+                .when(header("CamelHttpResponseCode").isEqualTo(200))
+                    .log("Successfully sent order confirmation to analytics.")
+                .otherwise()
+                    .log("Failed to send order confirmation. Status: ${header.CamelHttpResponseCode}, Error: ${body}")
+            .end();
+    }
+}
+```
+
+**Explanation:**
+
+- process(exchange -> {...}): We create a sample Map to represent order details. In a real application, this would come from the previous processing steps of the order.
+- marshal().json(JsonLibrary.Jackson): Converts the Java Map (or POJO) into a JSON string, which will be used as the HTTP request body.
+- .setHeader("Content-Type", constant("application/json")): Essential for POST/PUT requests with a body, informing the server about the body's format.
+- .setHeader("X-API-Key", constant("YOUR_SECRET_API_KEY")): An example of a custom HTTP header for authentication or specific service requirements.
+- .setHeader("CamelHttpMethod", constant("POST")): This explicitly tells the http component to use the POST method. If not set, it defaults to GET for no body and POST for a body. It's good practice to be explicit.
+- .to("http://localhost:8082/analytics/orders?throwExceptionOnFailure=false"): Sends the request. The JSON body generated by marshal() becomes the request payload.
+
+**The rest Component: Higher-Level REST Abstraction**
+
+While the http component offers low-level control, the rest component in Camel provides a higher-level, more idiomatic way to define and interact with RESTful services. It simplifies the process of configuring HTTP methods, paths, and consumes/produces types, making your routes more readable and maintainable, especially when dealing with multiple REST endpoints. The rest component acts as a facade, allowing you to use different underlying HTTP implementations (like servlet, netty-http, jetty, spark-rest, etc.) without changing your route logic.
+
+**Key Features:**
+
+- Simplified DSL: Offers a clear, concise Domain Specific Language for defining REST endpoints (both producer and consumer).
+- Method Mapping: Directly maps HTTP methods (GET, POST, PUT, DELETE) to route logic.
+- Path Parameters: Easily handles path parameters (e.g., /users/{id}).
+- Query Parameters: Simplifies working with query parameters.
+- Content Negotiation: Can be configured to handle different produces and consumes media types (e.g., application/json, application/xml).
+- Underlying HTTP Implementations: Can leverage various HTTP servers (e.g., servlet for Spring Boot, netty-http for standalone) and clients (e.g., http).
+
+**Setting up the rest Component with Spring Boot**: For the rest component to work, you need a REST DSL component to provide the actual HTTP transport. In a Spring Boot application, camel-servlet is a common choice, which integrates with Spring Boot's embedded servlet container (Tomcat, Jetty, Undertow).
+
+Add the following dependency to your pom.xml:
+
+```xml
+<dependency>
+    <groupId>org.apache.camel.springboot</groupId>
+    <artifactId>camel-servlet-starter</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.apache.camel.springboot</groupId>
+    <artifactId>camel-http-starter</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.apache.camel.springboot</groupId>
+    <artifactId>camel-jackson-starter</artifactId> <!-- For JSON marshalling -->
+</dependency>
+```
+
+Configure application.properties to expose Camel's servlet:
+
+```
+camel.component.servlet.mapping.context-path=/api/*
+```
+
+This configuration means all REST endpoints defined by Camel's rest component will be accessible under the /api path.
+
+**Producing REST APIs with the rest Component (Server Side)**
+
+The rest component is particularly powerful for exposing REST APIs from your Camel application, effectively turning your Camel routes into a REST server.
+
+Example: Exposing an Order Status API for Partners Our E-commerce system might need to expose an API for partner applications to query the status of an order. Let's create a simple GET endpoint /orders/{orderId}.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.model.rest.RestBindingMode;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderStatusApiRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Configure the REST DSL
+        restConfiguration()
+            .component("servlet") // Use the servlet component for HTTP transport
+            .bindingMode(RestBindingMode.json) // Automatically marshal/unmarshal JSON
+            .contextPath("/api") // The base path for all REST services in this Camel context
+            .port(8080); // Spring Boot default port, adjust if needed
+
+        // Define the REST endpoint
+        rest("/orders") // Base path for this group of REST services
+            .get("/{orderId}") // Defines a GET method with a path parameter
+                .produces("application/json") // Specifies the response content type
+                .route()
+                .log("Received request for order status for order ID: ${header.orderId}")
+                // In a real scenario, you'd fetch order details from a database
+                // (e.g., using the 'jdbc' component from the next lesson)
+                // For now, let's simulate a response.
+                .process(exchange -> {
+                    String orderId = exchange.getIn().getHeader("orderId", String.class);
+                    Map<String, Object> orderStatus = new HashMap<>();
+                    orderStatus.put("orderId", orderId);
+                    if (orderId.equals("12345")) {
+                        orderStatus.put("status", "DELIVERED");
+                        orderStatus.put("deliveryDate", "2023-10-26");
+                        orderStatus.put("customer", "John Doe");
+                    } else if (orderId.equals("67890")) {
+                        orderStatus.put("status", "PENDING");
+                        orderStatus.put("expectedDelivery", "2023-11-05");
+                        orderStatus.put("customer", "Jane Smith");
+                    } else {
+                        orderStatus.put("status", "NOT_FOUND");
+                        orderStatus.put("message", "Order ID not found.");
+                        exchange.getIn().setHeader("CamelHttpResponseCode", 404); // Set HTTP 404 status
+                    }
+                    exchange.getIn().setBody(orderStatus);
+                })
+                .log("Responding with order status: ${body}");
+    }
+}
+```
+
+**Explanation:**
+
+- restConfiguration(): This block configures the global settings for the rest component.
+  - .component("servlet"): Specifies that the underlying HTTP transport for REST services will be handled by the camel-servlet component, integrating with Spring Boot's web server.
+  - .bindingMode(RestBindingMode.json): This is very powerful. It tells Camel to automatically marshal Java objects to JSON for responses and unmarshal JSON requests into Java objects (e.g., Map or POJOs).
+  - .contextPath("/api"): Sets the base path for all REST APIs defined in this Camel context. If Spring Boot's context path is also /, then this API will be available at /api/orders/{orderId}.
+  - .port(8080): Specifies the HTTP port. For Spring Boot, this usually defaults to 8080.
+- rest("/orders"): Defines a logical group of REST resources under the /orders path.
+- .get("/{orderId}"): Defines a GET HTTP method for requests matching the /orders/{orderId} path.
+  - {orderId}: This is a path parameter. Camel automatically extracts its value and places it into an exchange header named orderId (matching the parameter name).
+- .produces("application/json"): Specifies that this endpoint will produce a JSON response. Combined with bindingMode(RestBindingMode.json), Camel handles the conversion.
+- .route(): Marks the start of the Camel route that will handle requests to this REST endpoint.
+- .log(...): Logs the incoming request.
+- .process(exchange -> {...}): Simulates fetching order data.
+  - exchange.getIn().getHeader("orderId", String.class): How to retrieve the value of the path parameter.
+  - exchange.getIn().setBody(orderStatus): Sets the Map as the response body. Due to bindingMode(RestBindingMode.json), Camel will automatically convert this Map to a JSON string before sending it back to the client.
+  - exchange.getIn().setHeader("CamelHttpResponseCode", 404): Shows how to explicitly set the HTTP response status code for specific scenarios, like a "not found" error.
+ 
+**Consuming REST APIs with the rest Component (Client Side)**
+
+The rest component can also be used as a client, making calls to external REST services with a more abstract syntax compared to http. It handles setting up the correct HTTP methods and paths based on your rest DSL definition.
+
+Example: Submitting a New Order to an External Logistics Service Our E-commerce system might need to submit a completed order to an external Logistics Service for fulfillment. This service might expose a POST endpoint: /logistics/submit.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.model.dataformat.JsonLibrary;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Component
+public class LogisticsOrderSubmissionRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Configure the REST producer (client)
+        restConfiguration()
+            .component("http") // Use the 'http' component as the underlying client transport for producers
+            .host("localhost") // The host of the external REST service
+            .port(8083) // The port of the external REST service
+            .bindingMode(RestBindingMode.json); // For automatic JSON marshalling/unmarshalling
+
+        from("direct:submitOrderToLogistics")
+            .to("log:OrderSubmitter?showHeaders=true")
+            // Assume incoming body is a Map/POJO representing the order
+            .process(exchange -> {
+                // Simulate creating an order payload for the logistics service
+                String orderId = exchange.getIn().getBody(String.class); // Get order ID from initial body
+                Map<String, Object> orderPayload = new HashMap<>();
+                orderPayload.put("orderId", orderId);
+                orderPayload.put("items", List.of("Laptop_X", "Mouse_Y")); // Example items
+                orderPayload.put("shippingAddress", "123 Main St, Anytown");
+                exchange.getIn().setBody(orderPayload);
+            })
+            // Camel's 'rest' component for clients can directly take the body
+            // It automatically infers POST if a body is present for a method without path params
+            // If bindingMode is json, it will marshal the Map to JSON
+            .to("rest:post:logistics/submit") // Call the external REST service
+            .log("Order submitted to Logistics Service. Response: ${body} with status ${header.CamelHttpResponseCode}")
+            .choice()
+                .when(header("CamelHttpResponseCode").isEqualTo(200))
+                    .log("Successfully submitted order to logistics.")
+                .otherwise()
+                    .log("Failed to submit order to logistics. Status: ${header.CamelHttpResponseCode}, Error: ${body}")
+            .end();
+    }
+}
+```
+
+**Explanation:**
+
+- restConfiguration(): This configuration block is different from the server-side configuration. When rest is used as a client (producer), you define the target service details here.
+  - .component("http"): Specifies that the http component will be used internally by rest to make the actual HTTP calls.
+  - .host("localhost").port(8083): Defines the base URL of the external REST service.
+  - .bindingMode(RestBindingMode.json): Enables automatic JSON marshalling for outgoing requests and unmarshalling for incoming responses.
+- .to("rest:post:logistics/submit"): This is the concise syntax for calling an external REST service using the rest component as a producer.
+  - rest: Indicates using the rest component.
+  - post: Specifies the HTTP method. You can use get, put, delete, etc.
+  - logistics/submit: The relative path to append to the base URL (http://localhost:8083).
+- Camel automatically sets the Content-Type header to application/json because of bindingMode(RestBindingMode.json) and automatically marshals the Map (or POJO) in the message body to JSON for the POST request.
+
+**Choosing Between http and rest Components**
+
+
+| Feature | http Component | rest Component (Client-side) | rest Component (Server-side) |
+| :--: | :--: | :--: | :--: |
+|Purpose |	Low-level, direct HTTP client | High-level REST client | Expose REST APIs from Camel |
+|Control |	Very fine-grained control over HTTP requests/responses | Abstracts HTTP details, focuses on REST concepts | Abstracts HTTP server details, focuses on REST API definition |
+|URL Specification | Full URL in to() endpoint | Base URL in restConfiguration(), relative path in to() | Base URL in restConfiguration(), relative path in rest() |
+|Method Setting | Via CamelHttpMethod header (or inferred) | Explicitly in to("rest:method:path") | Explicitly in rest().method("/path") |
+|Headers | Set directly using setHeader() | Can set headers, but often less direct | Route consumer receives HTTP headers as Camel headers |
+|Body Handling | Raw body passed, needs manual marshalling/unmarshalling | Automatic JSON/XML marshalling/unmarshalling via bindingMode | Automatic JSON/XML marshalling/unmarshalling via bindingMode |
+|Use Cases | Specific HTTP needs, non-REST APIs, older services, when underlying HTTP client properties need tuning. | Consuming well-defined REST APIs, simpler DSL for common REST interactions. | Building RESTful microservices within Camel, exposing APIs to partners. |
+
+In general, for consuming external RESTful services, the rest component offers a cleaner DSL and handles common tasks like JSON marshalling automatically, making it the preferred choice. For exposing your own REST APIs, the rest component is the standard. However, if you need to interact with a non-RESTful HTTP service, or if you need very specific low-level control over the HTTP client configuration (e.g., custom connection pooling, proxy settings beyond basic SSL), the http component might be more suitable.
+
 #### <a name="chapter3part3.2"></a>Chapter 3 - Part 3.2: Practical Examples and Demonstrations
+
+Let's integrate these concepts into our "E-commerce Order Processing" case study.
+
+**Scenario 1: Order Validation Service (Consuming an External REST API)** When a new order comes in, we want to validate it against an external "Product Catalog Service" which offers a REST API GET /products/{productId} to fetch product details (including price and validity).
+
+**Step 1: Define the Product Catalog Service (Mock it if it doesn't exist)** For demonstration, let's assume we have a simple Spring Boot REST controller acting as our "Product Catalog Service".
+
+```java
+// ProductCatalogController.java (External Service - for testing purposes)
+package com.example.productcatalog;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@RestController
+public class ProductCatalogController {
+
+    @GetMapping("/products/{productId}")
+    public Map<String, Object> getProduct(@PathVariable String productId) {
+        Map<String, Object> product = new HashMap<>();
+        product.put("productId", productId);
+        product.put("name", "Unknown Product");
+        product.put("isValid", false);
+
+        switch (productId) {
+            case "PROD101":
+                product.put("name", "Laptop Pro X");
+                product.put("price", 1200.00);
+                product.put("isValid", true);
+                break;
+            case "PROD102":
+                product.put("name", "Wireless Mouse");
+                product.put("price", 25.00);
+                product.put("isValid", true);
+                break;
+            default:
+                // Default product details for unknown IDs
+                break;
+        }
+        return product;
+    }
+}
+```
+
+This controller would run on its own port (e.g., 8081).
+
+**Step 2: Create a Camel Route to Consume the Product Catalog Service** We'll use the rest component as a client for cleaner integration.
+
+```java
+// src/main/java/com/example/ecommerce/routes/OrderValidationRoute.java
+package com.example.ecommerce.routes;
+
+import org.apache.camel.Exchange;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.model.rest.RestBindingMode;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class OrderValidationRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Configure the REST producer (client) for Product Catalog Service
+        restConfiguration()
+            .component("http") // Use the 'http' component as the underlying client
+            .host("localhost") // Host of the external Product Catalog Service
+            .port(8081) // Port of the external Product Catalog Service
+            .bindingMode(RestBindingMode.json) // Automatic JSON (un)marshalling
+            .httpClientConfigurer("restClientConfig"); // Reference to a client configurer if needed (advanced)
+
+        from("direct:validateOrderItems")
+            .log("Starting order item validation for order: ${body[orderId]}")
+            .unmarshal().json() // Assume incoming body is JSON representing an order
+            .split(body().simple("items")) // Split the order into individual items
+                .log("Validating item: ${body[productId]}")
+                .setHeader("productId", body().simple("productId")) // Set productId header for REST call
+                // Call the external Product Catalog Service using rest client
+                .to("rest:get:products/{productId}") // GET call to /products/{productId}
+                // The response from the external service is now in the body, unmarshalled to Map
+                .log("Product validation response for ${header.productId}: ${body}")
+                .process(exchange -> {
+                    Map<String, Object> productDetails = exchange.getIn().getBody(Map.class);
+                    Map<String, Object> originalItem = (Map<String, Object>) exchange.getProperty(Exchange.SPLIT_SUB_UNIT_PROPERTY);
+
+                    boolean isValid = (boolean) productDetails.getOrDefault("isValid", false);
+                    if (isValid) {
+                        double price = (double) productDetails.getOrDefault("price", 0.0);
+                        originalItem.put("validatedPrice", price);
+                        originalItem.put("validationStatus", "VALID");
+                    } else {
+                        originalItem.put("validationStatus", "INVALID");
+                        originalItem.put("validationMessage", "Product not found or invalid.");
+                    }
+                    exchange.getIn().setBody(originalItem); // Pass updated item forward
+                })
+            .end() // End of split
+            .marshal().json() // Remarshal the combined validated items back to JSON
+            .log("Finished order item validation. Validated order: ${body}")
+            .to("direct:processValidatedOrder"); // Continue to next stage of order processing
+    }
+}
+```
+
+**Explanation:**
+
+- The restConfiguration points to the external ProductCatalogService running on localhost:8081.
+- The route from("direct:validateOrderItems") expects an incoming JSON order, which it then unmarshals.
+- split(body().simple("items")) processes each item in the order individually. This is a common EIP (covered in Module 4 in more detail, but used here to demonstrate item-level validation).
+- setHeader("productId", body().simple("productId")): Before calling the REST endpoint, we extract the productId from the current item and set it as a header. This header will be used by rest:get:products/{productId} to populate the path parameter.
+- to("rest:get:products/{productId}"): This performs the GET request to http://localhost:8081/products/{productId}. The rest component automatically takes the productId from the header and inserts it into the URL. The response body is automatically unmarshalled from JSON to a Map<String, Object>.
+- The process step updates the original order item with validation status and validated price.
+- marshal().json(): After processing all items, the aggregated result is marshalled back to JSON.
+
+**Scenario 2: Payment Gateway Callback (Producing a REST API)** After an order is submitted to a payment gateway, the gateway needs to notify our E-commerce system about the payment status (success or failure) via a callback. Our system needs to expose a REST endpoint POST /payments/callback to receive these notifications.
+
+**Step 1: Create a Camel Route to Expose the Payment Callback API**
+
+```java
+// src/main/java/com/example/ecommerce/routes/PaymentCallbackRoute.java
+package com.example.ecommerce.routes;
+
+import org.apache.camel.Exchange;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.model.rest.RestBindingMode;
+import org.springframework.stereotype.Component;
+
+import java.util.Map;
+
+@Component
+public class PaymentCallbackRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Configure the REST DSL for the server side (our application)
+        restConfiguration()
+            .component("servlet") // Use Spring Boot's servlet container
+            .bindingMode(RestBindingMode.json) // Automatic JSON (un)marshalling
+            .contextPath("/api") // Base path for our internal REST APIs
+            .port(8080) // Our application's port
+            .apiContextPath("/api-doc") // Optional: Expose API documentation endpoint
+            .apiProperty("api.title", "E-commerce Payment API")
+            .apiProperty("api.version", "1.0.0");
+
+        // Define the REST endpoint for payment callbacks
+        rest("/payments")
+            .post("/callback")
+                .consumes("application/json") // Expects JSON requests
+                .produces("application/json") // Responds with JSON
+                .route()
+                .log("Received payment callback: ${body}")
+                .unmarshal().json() // Unmarshal the incoming JSON body to a Map
+                .process(exchange -> {
+                    Map<String, Object> paymentStatus = exchange.getIn().getBody(Map.class);
+                    String transactionId = (String) paymentStatus.get("transactionId");
+                    String status = (String) paymentStatus.get("status");
+                    String orderId = (String) paymentStatus.get("orderId");
+
+                    if ("SUCCESS".equals(status)) {
+                        log.info("Payment SUCCESS for Order ID: {} (Transaction: {})", orderId, transactionId);
+                        // In a real scenario, update order status in DB (Module 3 - jdbc)
+                        // Trigger further processing like sending confirmation email (Module 3 - recipient list)
+                        exchange.getIn().setBody(Map.of("message", "Payment callback processed successfully.", "orderId", orderId, "status", "ACCEPTED"));
+                        exchange.getIn().setHeader(Exchange.HTTP_RESPONSE_CODE, 200); // OK
+                    } else if ("FAILED".equals(status)) {
+                        log.warn("Payment FAILED for Order ID: {} (Transaction: {}). Reason: {}", orderId, transactionId, paymentStatus.get("reason"));
+                        // Update order status to failed, potentially trigger retry logic (Module 4 - error handling)
+                        exchange.getIn().setBody(Map.of("message", "Payment callback processed with failure.", "orderId", orderId, "status", "REJECTED"));
+                        exchange.getIn().setHeader(Exchange.HTTP_RESPONSE_CODE, 200); // Still 200 if processed, failure is in body
+                    } else {
+                        log.error("Unknown payment status received for Order ID: {}: {}", orderId, status);
+                        exchange.getIn().setBody(Map.of("message", "Invalid payment status.", "orderId", orderId));
+                        exchange.getIn().setHeader(Exchange.HTTP_RESPONSE_CODE, 400); // Bad Request
+                    }
+                })
+                .marshal().json(); // Marshal the response Map back to JSON
+    }
+}
+```
+
+**Explanation:**
+
+- restConfiguration() for server-side setup: Uses servlet for the underlying HTTP server, sets JSON binding mode, and defines the base path /api.
+- rest("/payments").post("/callback"): Defines a POST endpoint at /api/payments/callback.
+- consumes("application/json") and produces("application/json"): Specifies the expected request and response content types.
+- unmarshal().json(): Automatically converts the incoming JSON request body into a Map<String, Object>.
+- The process step simulates handling the payment status. It logs the event, updates the response body with a message, and sets the appropriate CamelHttpResponseCode header, which translates to the actual HTTP response status.
+- marshal().json(): Converts the response Map into a JSON string to be sent back to the payment gateway.
+
+These examples illustrate how to both consume and produce REST APIs using Apache Camel's http and rest components, integrating them within the context of our E-commerce Order Processing system.
 
 #### <a name="chapter3part4"></a>Chapter 3 - Part 4: Database Integration with `jdbc` component for order persistence
 
+Integrating with databases is a fundamental requirement for almost all enterprise applications, providing a robust mechanism for data storage and retrieval. In the realm of enterprise integration, systems often need to persist critical business data, such as customer orders, inventory updates, or transaction logs, to a reliable backend database. Apache Camel, with its powerful jdbc component, simplifies this interaction by allowing routes to execute SQL queries and commands against any relational database. This lesson delves into using the jdbc component to ensure that our e-commerce order processing system, introduced in previous modules, can durably store incoming orders, making them available for subsequent processing steps and ensuring data integrity. We will explore how to configure database connectivity within a Spring Boot application and craft Camel routes to perform essential CRUD (Create, Read, Update, Delete) operations, transforming our transient message exchanges into persistent records.
+
 #### <a name="chapter3part4.1"></a>Chapter 3 - Part 4.1: Understanding the jdbc Component
+
+The jdbc component in Apache Camel provides a straightforward way to interact with relational databases using standard SQL. It acts as a consumer or producer, executing SQL commands and queries against a configured javax.sql.DataSource. This means Camel doesn't manage the database connections itself; instead, it relies on an existing DataSource provided by the underlying framework (in our case, Spring Boot).
+
+The primary function of the jdbc component is to:
+
+- **Execute SQL Statements**: Send INSERT, UPDATE, DELETE, and SELECT statements to the database.
+- **Process Results**: Convert database query results into Camel message bodies, typically as a List<Map<String, Object>> for SELECT queries, or an Integer for update counts.
+- **Utilize Prepared Statements**: Support parameterized queries to prevent SQL injection and improve performance.
+
+**jdbc Component URI Format**
+
+The URI for the jdbc component is simple:
+
+jdbc:dataSourceName
+
+- dataSourceName: This is the name of the javax.sql.DataSource Spring Bean registered in your application context. Camel will look up this DataSource by its name.
+
+**Configuring a DataSource in Spring Boot**
+
+Before Camel can use the jdbc component, a DataSource must be available. Spring Boot makes this incredibly easy through its auto-configuration capabilities.
+
+- Dependencies: You need the spring-boot-starter-jdbc dependency and a database driver (e.g., H2, PostgreSQL, MySQL) in your pom.xml.
+
+```xml
+<dependency>
+    <groupId>org.apache.camel.springboot</groupId>
+    <artifactId>camel-jdbc-starter</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-jdbc</artifactId>
+</dependency>
+<dependency>
+    <groupId>com.h2database</groupId>
+    <artifactId>h2</artifactId>
+    <scope>runtime</scope>
+</dependency>
+```
+
+- application.properties Configuration: Spring Boot automatically configures a DataSource bean if it finds the necessary properties in application.properties (or application.yml). For example, using an H2 in-memory database for development:
+
+```
+# application.properties
+spring.datasource.url=jdbc:h2:mem:orderdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+spring.datasource.driver-class-name=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+spring.datasource.initialization-mode=always # Ensures schema.sql runs on startup
+```
+
+- spring.datasource.url: Specifies the JDBC URL. jdbc:h2:mem:orderdb creates an in-memory database named orderdb.
+- spring.datasource.driver-class-name: The JDBC driver class.
+- spring.datasource.username, spring.datasource.password: Database credentials.
+- spring.datasource.initialization-mode=always: This property tells Spring Boot to execute schema.sql and data.sql (if they exist) on application startup. This is very useful for setting up your database for testing or initial deployment.
+
+- Database Schema (schema.sql): For our e-commerce order processing case study, we'll need a table to store orders. Create a schema.sql file in your src/main/resources directory:
+
+```sql
+-- src/main/resources/schema.sql
+CREATE TABLE IF NOT EXISTS orders (
+    id VARCHAR(36) PRIMARY KEY,
+    customer_id VARCHAR(255),
+    order_date TIMESTAMP,
+    amount DECIMAL(10, 2),
+    status VARCHAR(50),
+    item_count INT
+);
+```
+
+This orders table will store the essential details of each processed order.
 
 #### <a name="chapter3part4.2"></a>Chapter 3 - Part 4.2: Interacting with Databases via Camel jdbc
 
+Camel's jdbc component facilitates various database interactions. The SQL statement to be executed is typically set in the message body, or it can be configured directly on the endpoint for static queries. Parameters for prepared statements are passed via message headers.
+
+**Inserting Data**
+
+To persist new orders into our orders table, we'll use an INSERT statement. The jdbc component is most effectively used with prepared statements to prevent SQL injection vulnerabilities and improve performance.
+
+**Mechanism:**
+
+- The message body contains the SQL INSERT statement with ? placeholders for parameters.
+- The CamelJdbcParameters header (a java.util.List or java.util.Map) contains the actual parameter values.
+  - If List: Parameters are applied in order of appearance (?).
+  - If Map: Keys in the map correspond to named parameters in the SQL (e.g., :id).
+ 
+**Example: Persisting an E-commerce Order**
+
+Let's assume an incoming order message body is a JSON string, which we first convert into a Map or a custom POJO, and then use to construct the INSERT statement and its parameters.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+@Component
+public class OrderPersistenceRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Define a direct endpoint for ingesting orders
+        from("direct:persistOrder")
+            .routeId("persistOrderRoute")
+            .log("Received order for persistence: ${body}")
+            .unmarshal().json(Map.class) // Assuming body is JSON, unmarshal to Map
+            .process(exchange -> {
+                // Get the order data from the unmarshalled JSON map
+                Map<String, Object> order = exchange.getIn().getBody(Map.class);
+
+                // Generate a unique ID for the order
+                String orderId = UUID.randomUUID().toString();
+                String customerId = (String) order.get("customerId");
+                Double amount = (Double) order.get("amount");
+                Integer itemCount = (Integer) order.get("itemCount");
+                String status = "PENDING"; // Default status for new orders
+
+                // Build the SQL INSERT statement with placeholders
+                String insertSql = "INSERT INTO orders (id, customer_id, order_date, amount, status, item_count) " +
+                                   "VALUES (?, ?, ?, ?, ?, ?)";
+                
+                // Set the SQL statement as the message body
+                exchange.getIn().setBody(insertSql);
+
+                // Create a list of parameters for the prepared statement
+                List<Object> jdbcParameters = new ArrayList<>();
+                jdbcParameters.add(orderId);
+                jdbcParameters.add(customerId);
+                jdbcParameters.add(new Date()); // Current timestamp for order_date
+                jdbcParameters.add(amount);
+                jdbcParameters.add(status);
+                jdbcParameters.add(itemCount);
+
+                // Set the parameters in the 'CamelJdbcParameters' header
+                exchange.getIn().setHeader("CamelJdbcParameters", jdbcParameters);
+
+                log.info("Persisting order ID: {}", orderId);
+            })
+            .to("jdbc:dataSource") // Use the 'dataSource' bean configured by Spring Boot
+            .log("Order persisted successfully. Records updated: ${body}")
+            .end();
+    }
+}
+```
+
+**Explanation:**
+
+- from("direct:persistOrder"): Defines a direct endpoint to trigger this route. This could be replaced by a file component (file:orders/inbox) or a REST endpoint (rest:post:orders) in a real scenario.
+- unmarshal().json(Map.class): If the incoming message is JSON, this unmarshals it into a java.util.Map. This step is crucial for easily accessing order properties.
+- process(exchange -> { ... }): A processor is used to prepare the SQL statement and its parameters.
+  - It extracts details from the incoming order.
+  - It constructs the INSERT SQL statement with ? placeholders.
+  - It sets this SQL string as the new message body.
+  - It creates a List<Object> containing the values for the placeholders in the correct order.
+  - It sets this list to the CamelJdbcParameters header. This header is specifically recognized by the jdbc component to provide parameters for prepared statements.
+- to("jdbc:dataSource"): This sends the message to the jdbc component. Since the message body contains the SQL and the CamelJdbcParameters header contains the values, the jdbc component executes the prepared statement.
+- log("Order persisted successfully. Records updated: ${body}"): The jdbc component typically returns the number of rows affected as the message body for INSERT, UPDATE, and DELETE operations.
+
+**Querying Data**
+
+Retrieving data from the database is equally straightforward using SELECT statements.
+
+**Mechanism:**
+
+- The message body contains the SELECT SQL statement.
+- The CamelJdbcParameters header can be used for WHERE clause parameters.
+- The jdbc component will execute the query and return the results as a List<Map<String, Object>> in the message body, where each map represents a row and keys are column names.
+
+**Example: Retrieving Pending Orders**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class OrderRetrievalRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Route to retrieve all pending orders
+        from("timer:retrievePendingOrders?period=10000") // Triggers every 10 seconds
+            .routeId("retrievePendingOrdersRoute")
+            .setBody(constant("SELECT id, customer_id, order_date, amount, status, item_count FROM orders WHERE status = 'PENDING'"))
+            .to("jdbc:dataSource")
+            .choice()
+                .when(body().isNull().or().method(List.class, "isEmpty"))
+                    .log("No pending orders found.")
+                .otherwise()
+                    .log("Found pending orders: ${body.size()} orders")
+                    .split(body()) // Split the list of maps into individual order messages
+                        .log("Processing pending order: ${body[id]} - Customer: ${body[customer_id]}, Amount: ${body[amount]}")
+                        // Here you would typically process each order, perhaps send it to another route
+                        // .to("direct:processIndividualOrder")
+                    .end()
+            .endChoice()
+            .end();
+
+        // Example route to retrieve an order by ID using a parameter
+        from("direct:getOrderById")
+            .routeId("getOrderByIdRoute")
+            .log("Attempting to retrieve order by ID: ${header.orderId}")
+            .process(exchange -> {
+                String orderId = exchange.getIn().getHeader("orderId", String.class);
+                String selectSql = "SELECT id, customer_id, order_date, amount, status, item_count FROM orders WHERE id = ?";
+                exchange.getIn().setBody(selectSql);
+
+                // Parameters can also be passed as a List directly
+                List<String> params = List.of(orderId);
+                exchange.getIn().setHeader("CamelJdbcParameters", params);
+            })
+            .to("jdbc:dataSource")
+            .choice()
+                .when(body().isNull().or().method(List.class, "isEmpty"))
+                    .log("Order with ID ${header.orderId} not found.")
+                .otherwise()
+                    .log("Retrieved order: ${body}")
+                    .setBody(simple("${body[0]}")) // Assuming we only expect one result, take the first item
+            .endChoice()
+            .end();
+    }
+}
+```
+
+**Explanation:**
+
+- from("timer:retrievePendingOrders?period=10000"): A timer endpoint periodically triggers the route.
+- setBody(constant("SELECT ... WHERE status = 'PENDING'")): The SQL SELECT statement is set as the message body. In this case, it's a static query.
+- to("jdbc:dataSource"): Executes the query.
+- choice().when(body().isNull().or().method(List.class, "isEmpty")): Checks if the returned list of orders is empty or null. The jdbc component returns an empty List if no records are found, not null.
+- split(body()): If multiple orders are returned, the split EIP (covered in detail in Module 4) can break the List<Map> into individual messages, each containing one order Map. This allows subsequent processing steps to handle orders one by one.
+- from("direct:getOrderById"): Demonstrates retrieving a single order by ID, where the ID is passed as a header.
+- process(...): Dynamically constructs the SELECT statement with a ? placeholder and sets the orderId from the header into CamelJdbcParameters.
+- setBody(simple("${body[0]}")): For queries expected to return a single result, you might want to extract the first (and only) Map from the List to simplify subsequent processing.
+
+**Updating and Deleting Data**
+
+UPDATE and DELETE operations follow the same pattern as INSERT. The SQL statement is in the message body, and parameters are in CamelJdbcParameters. The jdbc component returns the number of rows affected as the message body.
+
+**Example: Updating Order Status and Deleting Cancelled Orders**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+import java.util.List;
+
+@Component
+public class OrderUpdateDeleteRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Route to update an order's status
+        from("direct:updateOrderStatus")
+            .routeId("updateOrderStatusRoute")
+            .log("Attempting to update status for order ID: ${header.orderId} to ${header.newStatus}")
+            .process(exchange -> {
+                String orderId = exchange.getIn().getHeader("orderId", String.class);
+                String newStatus = exchange.getIn().getHeader("newStatus", String.class);
+
+                String updateSql = "UPDATE orders SET status = ? WHERE id = ?";
+                exchange.getIn().setBody(updateSql);
+
+                List<Object> params = List.of(newStatus, orderId);
+                exchange.getIn().setHeader("CamelJdbcParameters", params);
+            })
+            .to("jdbc:dataSource")
+            .log("Order status updated. Records affected: ${body}")
+            .end();
+
+        // Route to delete a cancelled order
+        from("direct:deleteCancelledOrder")
+            .routeId("deleteCancelledOrderRoute")
+            .log("Attempting to delete cancelled order ID: ${header.orderId}")
+            .process(exchange -> {
+                String orderId = exchange.getIn().getHeader("orderId", String.class);
+
+                String deleteSql = "DELETE FROM orders WHERE id = ?";
+                exchange.getIn().setBody(deleteSql);
+
+                List<Object> params = List.of(orderId);
+                exchange.getIn().setHeader("CamelJdbcParameters", params);
+            })
+            .to("jdbc:dataSource")
+            .log("Cancelled order deleted. Records affected: ${body}")
+            .end();
+    }
+}
+```
+
+**Explanation:**
+
+- from("direct:updateOrderStatus"): Accepts orderId and newStatus as headers.
+- process(...): Constructs an UPDATE SQL statement with parameters and sets them via CamelJdbcParameters.
+- from("direct:deleteCancelledOrder"): Accepts orderId for deletion.
+- process(...): Constructs a DELETE SQL statement with parameters.
+
+**Transaction Management**
+
+While the jdbc component can participate in Spring-managed transactions (if camel-spring-jdbc is used and a PlatformTransactionManager is configured), a deep dive into transaction management, including atomicity for multiple database operations, will be covered in Module 4: Advanced Camel EIPs, Error Handling, and Testing Strategies. For now, it's sufficient to understand that individual jdbc component calls are typically auto-committed unless an explicit transaction manager is active.
+
 #### <a name="chapter3part4.3"></a>Chapter 3 - Part 4.3: Practical Examples and Demonstrations
+
+Let's put everything together in a complete Spring Boot application.
+
+- 1. Project Structure:
+
+```
+├── pom.xml
+└── src
+    └── main
+        ├── java
+        │   └── com
+        │       └── example
+        │           └── camel
+        │               ├── CamelJdbcApplication.java
+        │               ├── OrderPersistenceRoute.java
+        │               ├── OrderRetrievalRoute.java
+        │               └── OrderUpdateDeleteRoute.java
+        └── resources
+            ├── application.properties
+            └── schema.sql
+```
+
+- 2. pom.xml
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version> <!-- Use a recent Spring Boot version -->
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.example.camel</groupId>
+    <artifactId>camel-jdbc-persistence</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>camel-jdbc-persistence</name>
+    <description>Database Integration with JDBC for Order Persistence</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <camel.version>4.4.0</camel.version> <!-- Ensure Camel version is compatible with Spring Boot -->
+    </properties>
+
+    <dependencies>
+        <!-- Spring Boot Starters -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!-- Apache Camel Spring Boot Starter for core and auto-configuration -->
+        <dependency>
+            <groupId>org.apache.camel.springboot</groupId>
+            <artifactId>camel-spring-boot-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <!-- Apache Camel JDBC component -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-jdbc</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <!-- Apache Camel Jackson for JSON unmarshalling -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-jackson</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+
+        <!-- H2 Database (in-memory for development/testing) -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Spring Boot Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+- 3. src/main/resources/application.properties
+
+```
+# H2 Database Configuration
+spring.datasource.url=jdbc:h2:mem:orderdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+spring.datasource.driver-class-name=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+spring.datasource.initialization-mode=always # Ensures schema.sql runs on startup
+
+# Camel Logging
+camel.springboot.log-explain-route-tree=false
+logging.level.org.apache.camel=INFO
+logging.level.com.example.camel=INFO
+```
+
+- 4. src/main/resources/schema.sql
+
+```sql
+-- src/main/resources/schema.sql
+CREATE TABLE IF NOT EXISTS orders (
+    id VARCHAR(36) PRIMARY KEY,
+    customer_id VARCHAR(255),
+    order_date TIMESTAMP,
+    amount DECIMAL(10, 2),
+    status VARCHAR(50),
+    item_count INT
+);
+```
+
+- 5. CamelJdbcApplication.java (Main Application Class) This class runs the Spring Boot application and demonstrates interacting with the routes.
+
+```java
+package com.example.camel;
+
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+
+import java.util.Map;
+import java.util.List;
+
+@SpringBootApplication
+public class CamelJdbcApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(CamelJdbcApplication.class, args);
+    }
+
+    @Bean
+    CommandLineRunner run(CamelContext camelContext) {
+        return args -> {
+            ProducerTemplate producerTemplate = camelContext.createProducerTemplate();
+
+            // --- 1. Persist a new order ---
+            System.out.println("\n--- Persisting a new order ---");
+            String order1Json = "{\"customerId\": \"CUST-001\", \"amount\": 150.75, \"itemCount\": 2}";
+            producerTemplate.sendBody("direct:persistOrder", order1Json);
+
+            // --- 2. Persist another order ---
+            System.out.println("\n--- Persisting another order ---");
+            String order2Json = "{\"customerId\": \"CUST-002\", \"amount\": 299.99, \"itemCount\": 1}";
+            producerTemplate.sendBody("direct:persistOrder", order2Json);
+
+            // Give some time for the timer route to pick up pending orders
+            Thread.sleep(5000); // Wait for 5 seconds
+
+            // --- 3. Retrieve all pending orders (triggered by timer, but we can also trigger manually) ---
+            System.out.println("\n--- Manually triggering retrieval of pending orders ---");
+            // The timer route "retrievePendingOrdersRoute" will also run automatically
+            // For demonstration, let's call it directly. The actual body doesn't matter for the timer route
+            // as it sets its own SQL.
+            // List<Map<String, Object>> pendingOrders = (List<Map<String, Object>>) producerTemplate.requestBody("direct:retrievePendingOrdersRoute", null);
+            // System.out.println("Manually retrieved pending orders: " + pendingOrders);
+
+
+            // --- 4. Retrieve a specific order by ID ---
+            System.out.println("\n--- Retrieving a specific order by ID ---");
+            // First, let's get one order ID from the pending orders (requires the timer to have run or manually retrieve all)
+            // For this example, let's assume we know an ID from the logs or previous manual retrieval
+            // In a real scenario, you'd capture the ID from the persistence step or query for it.
+            // For now, let's just create a dummy ID for demonstration if you want to test retrieval without knowing the exact ID from DB
+            // Or better, let's trigger the 'retrievePendingOrdersRoute' which then logs IDs, and we can pick one.
+            Thread.sleep(10000); // Ensure the timer route has run at least once
+
+            // As the timer route splits, it logs individual orders. We can copy an ID from the console or simulate it.
+            // For a robust test, we'd query and extract the ID. Let's send a dummy one for now, or you can replace with a real one from logs.
+            String knownOrderId = "REPLACE_WITH_A_REAL_ORDER_ID_FROM_LOGS_OR_DB_QUERY";
+            // If you ran the app and saw an ID in the log, e.g., "Persisting order ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            // You can paste that ID here.
+            
+            // To make this more self-contained without needing to manually get an ID,
+            // let's retrieve all orders, take the first one, and then retrieve it by its ID.
+            List<Map<String, Object>> allOrders = (List<Map<String, Object>>) producerTemplate.requestBody("direct:getAllOrders", null);
+            if (allOrders != null && !allOrders.isEmpty()) {
+                Map<String, Object> firstOrder = allOrders.get(0);
+                knownOrderId = (String) firstOrder.get("ID"); // Column names are typically uppercase from JDBC
+                System.out.println("First order ID found: " + knownOrderId);
+
+                Map<String, Object> retrievedOrder = (Map<String, Object>) producerTemplate.requestBodyAndHeader(
+                    "direct:getOrderById", null, "orderId", knownOrderId
+                );
+                System.out.println("Retrieved order by ID: " + retrievedOrder);
+            } else {
+                System.out.println("No orders found to retrieve by ID.");
+            }
+
+
+            // --- 5. Update an order's status ---
+            System.out.println("\n--- Updating an order's status ---");
+            if (!knownOrderId.equals("REPLACE_WITH_A_REAL_ORDER_ID_FROM_LOGS_OR_DB_QUERY")) {
+                producerTemplate.sendBodyAndHeaders("direct:updateOrderStatus", null, Map.of(
+                    "orderId", knownOrderId,
+                    "newStatus", "PROCESSED"
+                ));
+            } else {
+                System.out.println("Skipping update as no valid order ID was identified.");
+            }
+            
+            Thread.sleep(2000); // Give time for update to propagate
+            // Verify update by retrieving the order again
+            if (!knownOrderId.equals("REPLACE_WITH_A_REAL_ORDER_ID_FROM_LOGS_OR_DB_QUERY")) {
+                 Map<String, Object> updatedOrder = (Map<String, Object>) producerTemplate.requestBodyAndHeader(
+                    "direct:getOrderById", null, "orderId", knownOrderId
+                );
+                System.out.println("Order after update: " + updatedOrder);
+            }
+
+            // --- 6. Delete an order ---
+            System.out.println("\n--- Deleting an order ---");
+            // To demonstrate delete, let's create a new order and then delete it.
+            String orderToDeleteJson = "{\"customerId\": \"CUST-DEL\", \"amount\": 50.00, \"itemCount\": 1}";
+            producerTemplate.sendBody("direct:persistOrder", orderToDeleteJson);
+            Thread.sleep(1000); // Give time for persistence
+            
+            // Get the ID of the order we just created
+            List<Map<String, Object>> allOrdersBeforeDelete = (List<Map<String, Object>>) producerTemplate.requestBody("direct:getAllOrders", null);
+            String orderIdToDelete = null;
+            if (allOrdersBeforeDelete != null && !allOrdersBeforeDelete.isEmpty()) {
+                for (Map<String, Object> order : allOrdersBeforeDelete) {
+                    if ("CUST-DEL".equals(order.get("CUSTOMER_ID"))) { // H2 returns column names in uppercase
+                        orderIdToDelete = (String) order.get("ID");
+                        break;
+                    }
+                }
+            }
+
+            if (orderIdToDelete != null) {
+                producerTemplate.sendBodyAndHeader("direct:deleteCancelledOrder", null, "orderId", orderIdToDelete);
+            } else {
+                System.out.println("Skipping delete as no new order to delete was found.");
+            }
+            
+            Thread.sleep(2000); // Give time for deletion
+            // Verify deletion
+            System.out.println("\n--- Verifying deletion ---");
+            if (orderIdToDelete != null) {
+                 List<Map<String, Object>> ordersAfterDelete = (List<Map<String, Object>>) producerTemplate.requestBody("direct:getAllOrders", null);
+                 long deletedCount = ordersAfterDelete.stream().filter(o -> orderIdToDelete.equals(o.get("ID"))).count();
+                 System.out.println("Orders count with ID " + orderIdToDelete + " after deletion: " + deletedCount);
+            }
+
+            // Add an extra route for getAllOrders for demonstration purposes
+            // It's helpful to have a route to just fetch all current orders easily
+            producerTemplate.sendBody("direct:getAllOrders", null);
+        };
+    }
+    
+    // Add a simple route to get all orders for testing/verification
+    @Bean
+    public RouteBuilder getAllOrdersRoute() {
+        return new RouteBuilder() {
+            @Override
+            public void configure() throws Exception {
+                from("direct:getAllOrders")
+                    .setBody(constant("SELECT id, customer_id, order_date, amount, status, item_count FROM orders"))
+                    .to("jdbc:dataSource")
+                    .log("All current orders: ${body}");
+            }
+        };
+    }
+}
+```
+
+- 6. Route Definitions (OrderPersistenceRoute.java, OrderRetrievalRoute.java, OrderUpdateDeleteRoute.java) These are the route classes provided earlier in the "Interacting with Databases" section. Just ensure they are marked with @Component
+ 
+```java
+// OrderPersistenceRoute.java
+package com.example.camel;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+import java.util.*;
+
+@Component
+public class OrderPersistenceRoute extends RouteBuilder {
+    @Override
+    public void configure() throws Exception {
+        from("direct:persistOrder")
+            .routeId("persistOrderRoute")
+            .log("Received order for persistence: ${body}")
+            .unmarshal().json(Map.class)
+            .process(exchange -> {
+                Map<String, Object> order = exchange.getIn().getBody(Map.class);
+                String orderId = UUID.randomUUID().toString();
+                String customerId = (String) order.get("customerId");
+                Double amount = (Double) order.get("amount");
+                Integer itemCount = (Integer) order.get("itemCount");
+                String status = "PENDING";
+                String insertSql = "INSERT INTO orders (id, customer_id, order_date, amount, status, item_count) VALUES (?, ?, ?, ?, ?, ?)";
+                exchange.getIn().setBody(insertSql);
+                List<Object> jdbcParameters = new ArrayList<>();
+                jdbcParameters.add(orderId);
+                jdbcParameters.add(customerId);
+                jdbcParameters.add(new Date());
+                jdbcParameters.add(amount);
+                jdbcParameters.add(status);
+                jdbcParameters.add(itemCount);
+                exchange.getIn().setHeader("CamelJdbcParameters", jdbcParameters);
+                exchange.getIn().setHeader("persistedOrderId", orderId); // Store ID for potential later use
+                log.info("Persisting order ID: {}", orderId);
+            })
+            .to("jdbc:dataSource")
+            .log("Order persisted successfully. Records updated: ${body}")
+            .end();
+    }
+}
+```
+
+```java
+// OrderRetrievalRoute.java
+package com.example.camel;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class OrderRetrievalRoute extends RouteBuilder {
+    @Override
+    public void configure() throws Exception {
+        from("timer:retrievePendingOrders?period=10000") // Triggers every 10 seconds
+            .routeId("retrievePendingOrdersRoute")
+            .setBody(constant("SELECT id, customer_id, order_date, amount, status, item_count FROM orders WHERE status = 'PENDING'"))
+            .to("jdbc:dataSource")
+            .choice()
+                .when(body().isNull().or().method(List.class, "isEmpty"))
+                    .log("No pending orders found.")
+                .otherwise()
+                    .log("Found pending orders: ${body.size()} orders")
+                    .split(body())
+                        .log("Processing pending order: ${body[id]} - Customer: ${body[customer_id]}, Amount: ${body[amount]}")
+                    .end()
+            .endChoice()
+            .end();
+
+        from("direct:getOrderById")
+            .routeId("getOrderByIdRoute")
+            .log("Attempting to retrieve order by ID: ${header.orderId}")
+            .process(exchange -> {
+                String orderId = exchange.getIn().getHeader("orderId", String.class);
+                String selectSql = "SELECT id, customer_id, order_date, amount, status, item_count FROM orders WHERE id = ?";
+                exchange.getIn().setBody(selectSql);
+                List<String> params = List.of(orderId);
+                exchange.getIn().setHeader("CamelJdbcParameters", params);
+            })
+            .to("jdbc:dataSource")
+            .choice()
+                .when(body().isNull().or().method(List.class, "isEmpty"))
+                    .log("Order with ID ${header.orderId} not found.")
+                .otherwise()
+                    .log("Retrieved order: ${body}")
+                    .setBody(simple("${body[0]}"))
+            .endChoice()
+            .end();
+    }
+}
+```
+
+```java
+// OrderUpdateDeleteRoute.java
+package com.example.camel;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class OrderUpdateDeleteRoute extends RouteBuilder {
+    @Override
+    public void configure() throws Exception {
+        from("direct:updateOrderStatus")
+            .routeId("updateOrderStatusRoute")
+            .log("Attempting to update status for order ID: ${header.orderId} to ${header.newStatus}")
+            .process(exchange -> {
+                String orderId = exchange.getIn().getHeader("orderId", String.class);
+                String newStatus = exchange.getIn().getHeader("newStatus", String.class);
+                String updateSql = "UPDATE orders SET status = ? WHERE id = ?";
+                exchange.getIn().setBody(updateSql);
+                List<Object> params = List.of(newStatus, orderId);
+                exchange.getIn().setHeader("CamelJdbcParameters", params);
+            })
+            .to("jdbc:dataSource")
+            .log("Order status updated. Records affected: ${body}")
+            .end();
+
+        from("direct:deleteCancelledOrder")
+            .routeId("deleteCancelledOrderRoute")
+            .log("Attempting to delete cancelled order ID: ${header.orderId}")
+            .process(exchange -> {
+                String orderId = exchange.getIn().getHeader("orderId", String.class);
+                String deleteSql = "DELETE FROM orders WHERE id = ?";
+                exchange.getIn().setBody(deleteSql);
+                List<Object> params = List.of(orderId);
+                exchange.getIn().setHeader("CamelJdbcParameters", params);
+            })
+            .to("jdbc:dataSource")
+            .log("Cancelled order deleted. Records affected: ${body}")
+            .end();
+    }
+}
+```
+
+Run CamelJdbcApplication.java and observe the console output. You'll see orders being persisted, the timer route periodically checking for pending orders, and the manual triggers for retrieval, update, and delete.
 
 #### <a name="chapter3part5"></a>Chapter 3 - Part 5: Content-Based Router (CBR) for conditional order processing
 
+In enterprise integration scenarios, it's common for incoming messages or events to require different processing paths based on their content. For instance, an e-commerce platform might need to route high-value orders to a special fraud detection queue, while standard orders go to a regular fulfillment pipeline. Similarly, digital product orders might bypass physical shipping logistics entirely. This need for conditional routing is addressed by the Content-Based Router (CBR) Enterprise Integration Pattern (EIP). The CBR allows your integration routes to inspect the content of a message – be it in its body, headers, or properties – and dynamically choose the appropriate downstream endpoint or processing logic. This pattern is fundamental for building flexible, adaptive, and maintainable integration solutions, ensuring that each message is handled according to its specific characteristics.
+
 #### <a name="chapter3part5.1"></a>Chapter 3 - Part 5.1: Understanding the Content-Based Router EIP
+
+The Content-Based Router is one of the most widely used EIPs, providing a mechanism to inspect an incoming message and, based on rules defined using its content, send the message to one of several alternative destinations. In Apache Camel, this pattern is implemented using the choice(), when(), and otherwise() constructs within your routes.
+
+**How Content-Based Routing Works**
+
+At its core, a Content-Based Router operates like a conditional if-else if-else statement in programming, but applied to message routing:
+
+- choice(): This initiates the Content-Based Router block. It signifies that the route is about to evaluate conditions to determine the next step.
+- when(predicate): Each when() clause defines a specific condition (a predicate) that must be met for the message to be routed to its associated endpoint(s). Camel evaluates these when() clauses sequentially. The first when() clause whose predicate evaluates to true will "win," and the message will be routed along its defined path. Once a when() condition is met, subsequent when() conditions within the same choice() block are not evaluated.
+- otherwise(): This acts as a default or "catch-all" clause. If none of the preceding when() conditions evaluate to true, the message will be routed to the endpoint(s) specified in the otherwise() block. It is optional but highly recommended to ensure that no message gets dropped if no specific condition matches.
+
+**Expression Languages for Conditions**
+
+Camel's power in CBR comes from its extensive support for various Expression Languages. These languages are used within the when() predicates to define how message content (body, headers, properties) should be evaluated.
+
+Some common expression languages include:
+
+- **Simple Expression Language**: This is Camel's default and most commonly used expression language. It's powerful, easy to read, and allows access to message body, headers, exchange properties, system properties, and environment variables. It uses ${...} for body access, ${header.name} for headers, and ${exchangeProperty.name} for exchange properties. It also supports basic arithmetic, logical operators (&&, ||), and string manipulations.
+- **XPath**: For XML-based message content.
+- **JSONPath**: For JSON-based message content.
+- **Groovy/OGNL/MVEL**: For more complex, script-based conditions.
+- **Constant**: For simple, fixed string comparisons.
+
+For most common scenarios, especially with modern JSON-based or simple text messages, the Simple Expression Language is perfectly adequate and often the preferred choice due to its readability and performance. We will primarily use the Simple language in our examples.
+
+**Example 1: Basic Order Type Routing**
+
+Imagine our e-commerce system needs to process orders differently based on their orderType. Digital orders might go directly to a delivery service, while physical orders require warehouse fulfillment. We'll use a message header orderType to determine the routing.
+
+- **Hypothetical Scenario**: An incoming order message has a header orderType. If orderType is "digital", it should go to a "digital-processing" queue. If it's "physical", it goes to a "warehouse-fulfillment" queue. Any other type goes to a "manual-review" queue.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderTypeRouter extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:startOrderProcessing") // An internal endpoint to start processing
+            .log("Received order for processing. Order Type: ${header.orderType}") // Log the incoming order type
+            .choice() // Start the Content-Based Router
+                .when(header("orderType").isEqualTo("digital")) // Condition 1: If orderType header is "digital"
+                    .log("Routing digital order: ${body}") // Log specific routing
+                    .to("direct:processDigitalOrder") // Route to digital order processing
+                .when(header("orderType").isEqualTo("physical")) // Condition 2: If orderType header is "physical"
+                    .log("Routing physical order to warehouse: ${body}") // Log specific routing
+                    .to("direct:warehouseFulfillment") // Route to warehouse fulfillment
+                .otherwise() // Default case: If neither of the above conditions are met
+                    .log("Routing unclassified order to manual review: ${body}") // Log for manual review
+                    .to("direct:manualReviewOrder") // Route to manual review
+            .end(); // End the choice block
+
+        // Define the target routes for clarity (these would be full-fledged routes in a real app)
+        from("direct:processDigitalOrder")
+            .log("--> Processing digital order: ${body}");
+
+        from("direct:warehouseFulfillment")
+            .log("--> Initiating warehouse fulfillment for physical order: ${body}");
+
+        from("direct:manualReviewOrder")
+            .log("--> Sending order to manual review due to unclassified type: ${body}");
+    }
+}
+```
+
+In this example:
+
+- from("direct:startOrderProcessing") defines the entry point for our orders. A direct endpoint is synchronous and useful for internal routing.
+- log(...) statements are added for traceability, showing the path an order takes.
+- header("orderType").isEqualTo("digital") is a predicate using the Simple expression language to check the orderType header.
+- .to(...) specifies the next endpoint for the matched condition.
+- .end() is crucial to close the choice() block and return to the parent route scope.
 
 #### <a name="chapter3part5.2"></a>Chapter 3 - Part 5.2: Practical Examples and Demonstrations
 
-#### <a name="chapter3part5.3"></a>Chapter 3 - Part 5.3: Exercises and Practice Activities
+Let's apply the Content-Based Router to our "E-commerce Order Processing" case study, building on the concepts of message headers and body content that we explored in Module 2. We'll consider orders coming in as JSON messages.
+
+**Scenario 1: Basic Routing by Order Status**
+
+Our e-commerce system receives new orders, but some might be pre-approved (e.g., from trusted returning customers) while others need initial validation. Let's assume incoming orders have a status field in their JSON body.
+
+**Input JSON Example:**
+
+```json
+// Approved Order
+{
+  "orderId": "ORD-001",
+  "customerSegment": "Gold",
+  "totalAmount": 150.00,
+  "items": [{"productId": "P001", "qty": 1}],
+  "status": "APPROVED",
+  "paymentMethod": "CreditCard"
+}
+
+// Pending Approval Order
+{
+  "orderId": "ORD-002",
+  "customerSegment": "New",
+  "totalAmount": 50.00,
+  "items": [{"productId": "P002", "qty": 2}],
+  "status": "PENDING_APPROVAL",
+  "paymentMethod": "PayPal"
+}
+```
+
+**Camel Route:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderStatusRouter extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:processIncomingOrder")
+            .log("Received order for status-based routing: ${body}")
+            .choice()
+                // Route 1: If order status is 'APPROVED'
+                .when().jsonpath("$.status").isEqualTo("APPROVED")
+                    .log("--> Order ${jsonpath.orderId} is APPROVED. Routing to fulfillment.")
+                    .to("direct:orderFulfillment")
+                // Route 2: If order status is 'PENDING_APPROVAL'
+                .when().jsonpath("$.status").isEqualTo("PENDING_APPROVAL")
+                    .log("--> Order ${jsonpath.orderId} is PENDING_APPROVAL. Routing to validation queue.")
+                    .to("direct:orderValidationQueue")
+                // Default route: Any other status (e.g., 'CANCELLED', 'REJECTED', or unknown)
+                .otherwise()
+                    .log("--> Order ${jsonpath.orderId} has an unhandled status. Routing to error handling.")
+                    .to("direct:orderErrorHandling")
+            .end();
+
+        // Sub-routes for demonstration
+        from("direct:orderFulfillment")
+            .log("--- Fulfilling order: ${body}");
+
+        from("direct:orderValidationQueue")
+            .log("--- Sending order to validation: ${body}");
+
+        from("direct:orderErrorHandling")
+            .log("--- Logging unhandled order status error: ${body}");
+    }
+}
+```
+
+**Explanation:**
+
+- We use jsonpath("$.status") within the when() clause. This is another powerful expression language that allows us to directly extract values from JSON message bodies. $.status refers to the status field at the root of the JSON.
+- Notice how jsonpath.orderId is used in the log statement to dynamically insert the order ID, demonstrating how expression languages can be used both for conditions and for enriching log messages.
+- This example directly reads content from the message body, which is a common use case for CBR.
+
+**Scenario 2: Combining Multiple Conditions for High-Value Orders**
+
+Now let's enhance our logic. High-value orders (total amount over $1000) from VIP customers (customerSegment is "Gold") might need special expedited processing. All other high-value orders (not from "Gold" customers) might go to a fraud check.
+
+**Input JSON Example:**
+
+```json
+// VIP High-Value Order
+{
+  "orderId": "ORD-003",
+  "customerSegment": "Gold",
+  "totalAmount": 1250.00,
+  "items": [{"productId": "P003", "qty": 1}],
+  "status": "APPROVED",
+  "paymentMethod": "CreditCard"
+}
+
+// Standard High-Value Order (not Gold)
+{
+  "orderId": "ORD-004",
+  "customerSegment": "Silver",
+  "totalAmount": 1100.00,
+  "items": [{"productId": "P004", "qty": 1}],
+  "status": "APPROVED",
+  "paymentMethod": "CreditCard"
+}
+
+// Regular Order
+{
+  "orderId": "ORD-005",
+  "customerSegment": "Bronze",
+  "totalAmount": 250.00,
+  "items": [{"productId": "P005", "qty": 1}],
+  "status": "APPROVED",
+  "paymentMethod": "DebitCard"
+}
+```
+
+**Camel Route:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class HighValueOrderRouter extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:processAdvancedOrder")
+            .log("Received order for advanced routing: ${body}")
+            .choice()
+                // Condition 1: High-value AND Gold customer
+                .when()
+                    .jsonpath("$.customerSegment").isEqualTo("Gold")
+                    .and() // Logical AND to combine conditions
+                    .jsonpath("$.totalAmount").isGreaterThanOrEqualTo(1000.00)
+                    .log("--> VIP Gold high-value order ${jsonpath.orderId}. Routing to expedited processing.")
+                    .to("direct:expeditedProcessing")
+                // Condition 2: High-value (any other customer segment)
+                .when()
+                    .jsonpath("$.totalAmount").isGreaterThanOrEqualTo(1000.00)
+                    .log("--> High-value order ${jsonpath.orderId} (non-Gold). Routing to fraud check.")
+                    .to("direct:fraudCheckQueue")
+                // Default condition: All other orders (less than $1000)
+                .otherwise()
+                    .log("--> Standard order ${jsonpath.orderId}. Routing to normal fulfillment.")
+                    .to("direct:normalFulfillment")
+            .end();
+
+        // Sub-routes for demonstration
+        from("direct:expeditedProcessing")
+            .log("--- Processing expedited order: ${body}");
+
+        from("direct:fraudCheckQueue")
+            .log("--- Sending order to fraud check: ${body}");
+
+        from("direct:normalFulfillment")
+            .log("--- Processing normal order: ${body}");
+    }
+}
+```
+
+**Explanation:**
+
+- This example demonstrates combining multiple conditions within a single when() clause using .and(). Camel also supports .or() for logical OR operations.
+- The order of when() clauses is critical. If we had placed the "High-value (any other customer segment)" condition before the "High-value AND Gold customer" condition, the Gold customer's high-value order would have been caught by the broader condition first and routed incorrectly. Remember: the first matching when() wins.
+- We use isGreaterThanOrEqualTo() for numerical comparison, highlighting Simple/JSONPath's capabilities for comparing numeric values from the message body.
+
+**Scenario 3: Conditional Routing with Headers and Body Content for International Orders**
+
+Our e-commerce system needs to handle international orders differently. Specifically, orders from the "EU" region that are digital products should go to a specific EU digital tax processing service. All other EU orders (physical products or non-digital) should go to a general international shipping gateway. The region information might be in a header, while the product type is in the body.
+
+**Input JSON Example:**
+
+```json
+// EU Digital Order (Header: X-Customer-Region: EU)
+{
+  "orderId": "ORD-006",
+  "productType": "digital",
+  "items": [{"productId": "EBOOK-001", "qty": 1}],
+  "totalAmount": 25.00
+}
+
+// EU Physical Order (Header: X-Customer-Region: EU)
+{
+  "orderId": "ORD-007",
+  "productType": "physical",
+  "items": [{"productId": "TSHIRT-001", "qty": 1}],
+  "totalAmount": 40.00
+}
+
+// US Digital Order (Header: X-Customer-Region: US)
+{
+  "orderId": "ORD-008",
+  "productType": "digital",
+  "items": [{"productId": "COURSE-001", "qty": 1}],
+  "totalAmount": 199.00
+}
+```
+
+**Camel Route:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class InternationalOrderRouter extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:processInternationalOrder")
+            .log("Received international order for routing. Header X-Customer-Region: ${header.X-Customer-Region}, Body: ${body}")
+            .choice()
+                // Condition 1: From EU AND digital product
+                .when(header("X-Customer-Region").isEqualTo("EU"))
+                    .and()
+                    .jsonpath("$.productType").isEqualTo("digital")
+                    .log("--> EU Digital Order ${jsonpath.orderId}. Routing to EU digital tax processing.")
+                    .to("direct:euDigitalTaxProcessing")
+                // Condition 2: From EU (any other product type)
+                .when(header("X-Customer-Region").isEqualTo("EU"))
+                    .log("--> EU Physical/Other Order ${jsonpath.orderId}. Routing to EU shipping gateway.")
+                    .to("direct:euShippingGateway")
+                // Default: All other regions/unspecified
+                .otherwise()
+                    .log("--> Non-EU or unclassified order ${jsonpath.orderId}. Routing to global fulfillment.")
+                    .to("direct:globalFulfillment")
+            .end();
+
+        // Sub-routes for demonstration
+        from("direct:euDigitalTaxProcessing")
+            .log("--- Sending order to EU digital tax service: ${body}");
+
+        from("direct:euShippingGateway")
+            .log("--- Sending order to EU shipping gateway: ${body}");
+
+        from("direct:globalFulfillment")
+            .log("--- Sending order to global fulfillment service: ${body}");
+    }
+}
+```
+
+**Explanation:**
+
+- This example combines header-based conditions (header("X-Customer-Region").isEqualTo("EU")) with body-based conditions (jsonpath("$.productType").isEqualTo("digital")). This is a very powerful feature of Camel's CBR, allowing for highly specific routing logic.
+- Again, the order of when() clauses is vital. The more specific condition (EU + Digital) must come before the more general one (just EU) to ensure correct routing.
 
 #### <a name="chapter3part6"></a>Chapter 3 - Part 6: Recipient List for fanning out order notifications
 
+In enterprise integration, situations often arise where a single message needs to be delivered to multiple distinct destinations simultaneously. Imagine an e-commerce system where, upon a successful order placement, the same order information must trigger several independent actions: sending an email confirmation to the customer, notifying the shipping department to prepare the package, updating an analytics dashboard, and perhaps even triggering a marketing campaign. Manually routing the message to each of these destinations using sequential to() calls can become cumbersome and inflexible, especially if the list of recipients changes based on message content or external factors. The Recipient List Enterprise Integration Pattern (EIP) provides an elegant solution to this problem, allowing a message to be dynamically dispatched to a list of endpoints determined at runtime, effectively "fanning out" the message to all interested parties without tight coupling.
+
 #### <a name="chapter3part6.1"></a>Chapter 3 - Part 6.1: Understanding the Recipient List EIP
+
+The Recipient List EIP is a powerful pattern designed to handle scenarios where a message needs to be sent to a dynamic set of destinations. Unlike simple point-to-point routing with to() or even static fan-out with the Multicast EIP (which sends to a predefined, fixed list of endpoints), the Recipient List determines the actual target endpoints based on information within the message itself, external configuration, or logic executed by a processor.
+
+At its core, the Recipient List allows you to compute a list of one or more endpoints and then dispatch a copy of the original message to each of these calculated endpoints. This makes it highly flexible for scenarios like distributing notifications, synchronizing data across multiple systems, or triggering parallel processes based on message content.
+
+**Why Use Recipient List?**
+
+- **Dynamic Routing**: The primary advantage is the ability to determine recipient endpoints at runtime. This allows business rules or message content to influence where a message goes without requiring changes to the integration route itself.
+- **Loose Coupling**: The sender of the message doesn't need to know all the potential recipients upfront. The responsibility of figuring out who receives the message can be delegated to a part of the route that generates the recipient list.
+- **Scalability and Flexibility**: New recipients can be added or removed without modifying the core routing logic, as long as the mechanism for generating the recipient list can adapt. This is crucial for evolving systems like our E-commerce Order Processing case study, where new notification channels or internal systems might be added over time.
+- **Fan-Out Scenarios**: It's ideal for "fan-out" scenarios where a single event (like an order confirmation) needs to trigger multiple, often independent, subsequent actions.
+
+**Recipient List vs. Other Routing Patterns**
+
+It's helpful to compare the Recipient List with other routing patterns you've encountered in previous lessons:
+
+- to() (Point-to-Point): Sends a message to a single, fixed endpoint. The Recipient List, by contrast, sends to multiple dynamic endpoints.
+- Content-Based Router (CBR) (choice().when()): Directs a message to one of several possible endpoints based on a condition. If multiple conditions are met, it typically only takes the first matching path. The Recipient List sends the message to all specified endpoints.
+- Multicast EIP: Sends a message to a fixed, predefined list of endpoints. The list of endpoints is hardcoded or statically configured within the route. The Recipient List, as discussed, determines its recipients dynamically. This is a critical distinction: Multicast is for static fan-out, Recipient List is for dynamic fan-out.
+
+Hypothetical Scenario: Imagine an internal HR system. When a new employee joins, their information needs to be sent to:
+
+- The IT department for account creation.
+- The payroll system.
+- The benefits administration system.
+- The welcome email system. If the employee is a manager, an additional notification needs to go to the "leadership training" system. A Multicast would send to IT, payroll, benefits, and welcome. But how do you conditionally add "leadership training"? A Content-Based Router could send to either the standard list or the standard list plus leadership training, but it's often more complex to manage multiple conditional outputs. The Recipient List shines here: you compute the base list (IT, payroll, etc.) and then conditionally add "leadership training" to the same list before the message is fanned out.
 
 #### <a name="chapter3part6.2"></a>Chapter 3 - Part 6.2: Implementing Recipient List in Apache Camel
 
+Apache Camel provides the recipientList() DSL method to implement this EIP. The method accepts an expression that evaluates to a list of endpoint URIs.
+
+**Basic Syntax and Usage**
+
+The simplest way to use recipientList() is to provide a comma-separated string of endpoint URIs. However, this is more akin to a static multicast. The real power comes from dynamically generating this string or a collection of URIs.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderNotificationRoutes extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        // A simple route to demonstrate recipientList with a fixed string (less dynamic, but illustrates syntax)
+        from("direct:startRecipientList")
+            .log("Received message for recipient list: ${body}")
+            // The recipientList() EIP consumes an expression that evaluates to a list of endpoint URIs.
+            // By default, it expects a comma-separated string or a Collection of Strings.
+            .recipientList("direct:endpointA,direct:endpointB,direct:endpointC");
+
+        // Example recipients
+        from("direct:endpointA")
+            .log("Message received by Endpoint A: ${body}");
+
+        from("direct:endpointB")
+            .log("Message received by Endpoint B: ${body}");
+
+        from("direct:endpointC")
+            .log("Message received by Endpoint C: ${body}");
+    }
+}
+```
+
+In the above example, when a message arrives at direct:startRecipientList, it will be sent to direct:endpointA, direct:endpointB, and direct:endpointC simultaneously.
+
+**Dynamically Determining Recipients**
+
+The true strength of recipientList() lies in its ability to generate the list of recipients dynamically. This can be achieved in several ways:
+
+- From a Message Header: Store the comma-separated endpoint URIs or a Collection<String> in a message header.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class DynamicRecipientListRoute extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:processOrder")
+            .log("Processing order: ${body}")
+            // Set a header with dynamic recipients based on some logic (e.g., order type)
+            .setHeader("recipients", () -> "direct:emailService,direct:shippingService") // Example: could be more complex logic
+            .recipientList(header("recipients")) // Use the header 'recipients' to get the list
+            .log("Order processed and notifications fanned out.");
+
+        from("direct:emailService")
+            .log("Sending email for order: ${body}");
+
+        from("direct:shippingService")
+            .log("Notifying shipping for order: ${body}");
+    }
+}
+```
+
+In this example, the recipients header is populated with a static string direct:emailService,direct:shippingService. In a real scenario, this header could be set by a preceding process() step or a more complex expression.
+
+- From a Processor: A custom Processor can inspect the message content, query external systems, or apply business logic to construct the list of recipients.
+
+```java
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@Component
+public class ProcessorRecipientListRoute extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:orderProcessor")
+            .log("Received order for dynamic routing: ${body}")
+            .process(new OrderRecipientProcessor()) // Our custom processor determines recipients
+            .recipientList(header("RecipientsList")) // The processor sets this header
+            .log("Order fanned out to dynamic recipients.");
+
+        from("direct:standardNotification")
+            .log("Standard notification for order: ${body}");
+
+        from("direct:vipNotification")
+            .log("VIP notification for order: ${body}");
+
+        from("direct:fraudCheck")
+            .log("Performing fraud check for order: ${body}");
+    }
+
+    // Custom processor to determine recipients based on order content
+    private static class OrderRecipientProcessor implements Processor {
+        @Override
+        public void process(Exchange exchange) throws Exception {
+            String orderBody = exchange.getIn().getBody(String.class);
+            List<String> recipients = new ArrayList<>();
+            recipients.add("direct:standardNotification"); // Always send standard notification
+
+            // Example: If order contains "VIP", add VIP notification
+            if (orderBody.contains("VIP")) {
+                recipients.add("direct:vipNotification");
+            }
+
+            // Example: If order value is high, add fraud check
+            // For simplicity, let's assume "highValue" in body
+            if (orderBody.contains("highValue")) {
+                recipients.add("direct:fraudCheck");
+            }
+
+            // Set the list of recipients in a header
+            exchange.getIn().setHeader("RecipientsList", recipients);
+            System.out.println("Determined recipients: " + recipients);
+        }
+    }
+}
+```
+
+Here, OrderRecipientProcessor examines the order body. If the order is "VIP" or "highValue", it adds specific endpoints to the recipient list, which is then stored in the RecipientsList header.
+
+- Using a Bean Method: A Spring bean can be invoked to return the list of endpoints.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+import java.util.Arrays;
+import java.util.List;
+
+@Component
+public class RecipientService {
+    public List<String> getOrderRecipients(String orderDetails) {
+        List<String> recipients = new ArrayList<>();
+        recipients.add("direct:defaultLog");
+
+        if (orderDetails.contains("urgent")) {
+            recipients.add("direct:urgentAlert");
+        }
+        if (orderDetails.contains("international")) {
+            recipients.add("direct:customsDeclaration");
+        }
+        return recipients;
+    }
+}
+
+@Component
+public class BeanRecipientListRoute extends RouteBuilder {
+    @Override
+    public void configure() {
+        from("direct:beanRoute")
+            .log("Received message for bean-based recipient list: ${body}")
+            // Invoke a method on a Spring bean to get the recipients
+            .recipientList().method("recipientService", "getOrderRecipients")
+            .log("Message fanned out using bean service.");
+
+        from("direct:defaultLog")
+            .log("Default log recipient: ${body}");
+        from("direct:urgentAlert")
+            .log("Urgent alert recipient: ${body}");
+        from("direct:customsDeclaration")
+            .log("Customs declaration recipient: ${body}");
+    }
+}
+```
+
+In this setup, recipientService.getOrderRecipients() is called with the message body as an argument, and its returned List<String> is used as the recipient list.
+
+**Processing Strategies and Options**
+
+The recipientList() EIP offers several options to control how messages are dispatched and handled, especially concerning concurrency and error management.
+
+- parallelProcessing(): By default, Camel processes the recipients sequentially. If you want to send messages to all recipients concurrently, use parallelProcessing(). This can significantly improve throughput for I/O-bound operations.
+
+```java
+from("direct:startParallel")
+    .log("Starting parallel recipient list for: ${body}")
+    .recipientList(header("recipients")).parallelProcessing() // Process recipients concurrently
+    .log("Parallel processing complete.");
+```
+
+When parallelProcessing() is used, Camel uses a thread pool to dispatch messages to each recipient. Be mindful of resource consumption and thread pool configuration for high-volume scenarios.
+
+- stopOnException(): If an exception occurs during the processing of a message by one of the recipients, the default behavior is to continue sending messages to the remaining recipients in the list. If you want to stop processing the recipient list immediately upon the first exception, use stopOnException(true).
+
+```java
+from("direct:stopOnError")
+    .log("Starting recipient list with stopOnException for: ${body}")
+    .recipientList(header("recipients")).stopOnException(true) // Stop on first exception
+    .log("Recipient list processing complete (or stopped due to exception).");
+```
+
+- ignoreInvalidEndpoints(): If one of the dynamically determined endpoint URIs is invalid (e.g., misspelled component, missing required parameters), by default, Camel will throw an InvalidEndpointException. If you want to silently skip invalid endpoints and continue processing the valid ones, use ignoreInvalidEndpoints(true).
+
+```java
+from("direct:ignoreInvalid")
+    .log("Starting recipient list with ignoreInvalidEndpoints for: ${body}")
+    .recipientList(header("recipients")).ignoreInvalidEndpoints(true) // Skip invalid endpoints
+    .log("Recipient list processing complete (invalid endpoints ignored).");
+```
+
+- delimiter(): If your recipient list is provided as a single string and uses a character other than comma (,) as a separator, you can specify a custom delimiter.
+
+```java
+from("direct:customDelimiter")
+    .setHeader("recipients", constant("direct:foo;direct:bar"))
+    .recipientList(header("recipients")).delimiter(";") // Use semicolon as delimiter
+    .log("Recipients processed with custom delimiter.");
+```
+
 #### <a name="chapter3part6.3"></a>Chapter 3 - Part 6.3: Case Study: Fanning Out Order Notifications
+
+Let's apply the Recipient List EIP to our "E-commerce Order Processing" case study. After an order has been successfully processed (e.g., payment confirmed and inventory updated), we need to send various notifications. The list of notifications can vary based on factors like the customer's communication preferences, the order type, or the value of the order.
+
+Scenario: An Order object arrives after being successfully processed. We need to:
+
+- Send an email confirmation to the customer.
+- Send an SMS notification to the customer (if they opted in).
+- Notify the shipping department (via a JMS queue).
+- Send a simplified order summary to an analytics service (via HTTP POST).
+- If the order is for a "VIP" customer, also send an internal alert.
+
+We will simulate these services using direct: endpoints for clarity.
+
+**Implementation Details**
+
+First, let's define our Order POJO (Plain Old Java Object) for consistency.
+
+```java
+// src/main/java/com/example/camel/order/Order.java
+package com.example.camel.order;
+
+import java.io.Serializable;
+import java.math.BigDecimal;
+import java.util.List;
+
+public class Order implements Serializable {
+    private String orderId;
+    private String customerEmail;
+    private String customerPhone;
+    private boolean smsOptIn;
+    private BigDecimal totalAmount;
+    private String customerType; // e.g., "STANDARD", "VIP"
+    private List<OrderItem> items;
+
+    // Constructors, getters, setters
+    public Order() {}
+
+    public Order(String orderId, String customerEmail, String customerPhone, boolean smsOptIn, BigDecimal totalAmount, String customerType, List<OrderItem> items) {
+        this.orderId = orderId;
+        this.customerEmail = customerEmail;
+        this.customerPhone = customerPhone;
+        this.smsOptIn = smsOptIn;
+        this.totalAmount = totalAmount;
+        this.customerType = customerType;
+        this.items = items;
+    }
+
+    public String getOrderId() { return orderId; }
+    public void setOrderId(String orderId) { this.orderId = orderId; }
+
+    public String getCustomerEmail() { return customerEmail; }
+    public void setCustomerEmail(String customerEmail) { this.customerEmail = customerEmail; }
+
+    public String getCustomerPhone() { return customerPhone; }
+    public void setCustomerPhone(String customerPhone) { this.customerPhone = customerPhone; }
+
+    public boolean isSmsOptIn() { return smsOptIn; }
+    public void setSmsOptIn(boolean smsOptIn) { this.smsOptIn = smsOptIn; }
+
+    public BigDecimal getTotalAmount() { return totalAmount; }
+    public void setTotalAmount(BigDecimal totalAmount) { this.totalAmount = totalAmount; }
+
+    public String getCustomerType() { return customerType; }
+    public void setCustomerType(String customerType) { this.customerType = customerType; }
+
+    public List<OrderItem> getItems() { return items; }
+    public void setItems(List<OrderItem> items) { this.items = items; }
+
+    @Override
+    public String toString() {
+        return "Order{" +
+               "orderId='" + orderId + '\'' +
+               ", customerEmail='" + customerEmail + '\'' +
+               ", customerPhone='" + customerPhone + '\'' +
+               ", smsOptIn=" + smsOptIn +
+               ", totalAmount=" + totalAmount +
+               ", customerType='" + customerType + '\'' +
+               ", items=" + items +
+               '}';
+    }
+}
+```
+
+```java
+// src/main/java/com/example/camel/order/OrderItem.java
+package com.example.camel.order;
+
+import java.io.Serializable;
+import java.math.BigDecimal;
+
+public class OrderItem implements Serializable {
+    private String productId;
+    private int quantity;
+    private BigDecimal pricePerUnit;
+
+    // Constructors, getters, setters
+    public OrderItem() {}
+
+    public OrderItem(String productId, int quantity, BigDecimal pricePerUnit) {
+        this.productId = productId;
+        this.quantity = quantity;
+        this.pricePerUnit = pricePerUnit;
+    }
+
+    public String getProductId() { return productId; }
+    public void setProductId(String productId) { this.productId = productId; }
+
+    public int getQuantity() { return quantity; }
+    public void setQuantity(int quantity) { this.quantity = quantity; }
+
+    public BigDecimal getPricePerUnit() { return pricePerUnit; }
+    public void setPricePerUnit(BigDecimal pricePerUnit) { this.pricePerUnit = pricePerUnit; }
+
+    @Override
+    public String toString() {
+        return "OrderItem{" +
+               "productId='" + productId + '\'' +
+               ", quantity=" + quantity +
+               ", pricePerUnit=" + pricePerUnit +
+               '}';
+    }
+}
+```
+
+Now, the Camel route:
+
+```java
+// src/main/java/com/example/camel/routes/OrderNotificationRoute.java
+package com.example.camel.routes;
+
+import com.example.camel.order.Order;
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@Component
+public class OrderNotificationRoute extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        // Main route for fanning out order notifications
+        from("direct:fanOutOrderNotification")
+            .routeId("OrderNotificationFanOut")
+            .log("Received processed order for notification fan-out: ${body.orderId}")
+            // Use a custom processor to determine the list of recipients based on Order object
+            .process(new OrderNotificationRecipientProcessor())
+            // Use the header named 'NotificationRecipients' to get the list of endpoints
+            // Process in parallel for better performance, but stop if any crucial notification fails
+            .recipientList(header("NotificationRecipients")).parallelProcessing().stopOnException()
+            .log("Order notifications fanned out successfully for Order ID: ${body.orderId}");
+
+        // --- Simulated Notification Services ---
+
+        // 1. Email Service
+        from("direct:sendEmailConfirmation")
+            .routeId("EmailConfirmationService")
+            .log("Sending email confirmation to ${body.customerEmail} for Order ID: ${body.orderId}");
+            // In a real application, this would use a mail component (e.g., camel-mail)
+
+        // 2. SMS Service
+        from("direct:sendSmsNotification")
+            .routeId("SmsNotificationService")
+            .log("Sending SMS notification to ${body.customerPhone} for Order ID: ${body.orderId}");
+            // In a real application, this would use an SMS component (e.g., Twilio integration via camel-http)
+
+        // 3. Shipping Department (JMS Queue)
+        // Note: Using direct for simulation, but would be 'jms:queue:shippingOrders' in reality
+        from("direct:shippingQueue")
+            .routeId("ShippingDepartmentService")
+            .log("Sending order ${body.orderId} to shipping department via JMS for processing.");
+            // In Module 3, we discussed 'jms' component. This would use it for a real queue.
+
+        // 4. Analytics Service (HTTP POST)
+        // Note: Using direct for simulation, but would be 'http:analytics.example.com/orders' in reality
+        from("direct:analyticsService")
+            .routeId("AnalyticsService")
+            .log("Logging order ${body.orderId} to analytics system.");
+            // In Module 3, we discussed 'http' component. This would use it for a real HTTP service.
+
+        // 5. VIP Customer Alert Service
+        from("direct:vipAlertService")
+            .routeId("VipAlertService")
+            .log("ALERT: VIP Customer Order ${body.orderId} received! Total: ${body.totalAmount}");
+            // This could send an alert to an internal monitoring system or a dedicated Slack channel.
+    }
+
+    // Custom Processor to dynamically build the recipient list
+    private static class OrderNotificationRecipientProcessor implements Processor {
+        @Override
+        public void process(Exchange exchange) throws Exception {
+            Order order = exchange.getIn().getBody(Order.class);
+            List<String> recipients = new ArrayList<>();
+
+            // Always send email confirmation
+            recipients.add("direct:sendEmailConfirmation");
+
+            // Conditionally send SMS if customer opted in
+            if (order.isSmsOptIn()) {
+                recipients.add("direct:sendSmsNotification");
+            }
+
+            // Always notify shipping department
+            recipients.add("direct:shippingQueue");
+
+            // Always send to analytics
+            recipients.add("direct:analyticsService");
+
+            // Conditionally send VIP alert
+            if ("VIP".equalsIgnoreCase(order.getCustomerType())) {
+                recipients.add("direct:vipAlertService");
+            }
+
+            // Set the determined list of recipients in a header
+            exchange.getIn().setHeader("NotificationRecipients", recipients);
+            System.out.println("Order ID: " + order.getOrderId() + " - Determined recipients: " + recipients);
+        }
+    }
+}
+```
+
+To test this route, you can inject an Order object into direct:fanOutOrderNotification. For instance, in a Spring Boot application, you could use a ProducerTemplate:
+
+```java
+// src/main/java/com/example/camel/CamelApplication.java (main class or a test runner)
+package com.example.camel;
+
+import com.example.camel.order.Order;
+import com.example.camel.order.OrderItem;
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+
+import java.math.BigDecimal;
+import java.util.Arrays;
+
+@SpringBootApplication
+public class CamelApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(CamelApplication.class, args);
+    }
+
+    @Bean
+    CommandLineRunner startOrderNotifications(CamelContext camelContext) {
+        return args -> {
+            ProducerTemplate producerTemplate = camelContext.createProducerTemplate();
+
+            // Example 1: Standard customer, opted for SMS
+            Order standardOrderWithSms = new Order(
+                "ORD-001", "standard@example.com", "1234567890", true,
+                new BigDecimal("99.99"), "STANDARD",
+                Arrays.asList(new OrderItem("P1", 1, new BigDecimal("99.99"))));
+            System.out.println("\n--- Sending Standard Order with SMS Opt-in ---");
+            producerTemplate.sendBody("direct:fanOutOrderNotification", standardOrderWithSms);
+
+            // Example 2: VIP customer, no SMS opt-in
+            Order vipOrderNoSms = new Order(
+                "ORD-002", "vip@example.com", "0987654321", false,
+                new BigDecimal("599.99"), "VIP",
+                Arrays.asList(new OrderItem("P2", 2, new BigDecimal("299.99"))));
+            System.out.println("\n--- Sending VIP Order with No SMS Opt-in ---");
+            producerTemplate.sendBody("direct:fanOutOrderNotification", vipOrderNoSms);
+
+            // Example 3: Standard customer, no SMS opt-in
+            Order standardOrderNoSms = new Order(
+                    "ORD-003", "another@example.com", null, false,
+                    new BigDecimal("49.99"), "STANDARD",
+                    Arrays.asList(new OrderItem("P3", 1, new BigDecimal("49.99"))));
+            System.out.println("\n--- Sending Standard Order with No SMS Opt-in ---");
+            producerTemplate.sendBody("direct:fanOutOrderNotification", standardOrderNoSms);
+        };
+    }
+}
+```
+
+When you run this Spring Boot application, observe the logs.
+
+- For ORD-001 (Standard with SMS), you should see logs from: Email, SMS, Shipping, Analytics.
+- For ORD-002 (VIP without SMS), you should see logs from: Email, Shipping, Analytics, VIP Alert. (No SMS).
+- For ORD-003 (Standard without SMS), you should see logs from: Email, Shipping, Analytics. (No SMS, No VIP).
+
+This demonstrates how OrderNotificationRecipientProcessor dynamically determines the list of endpoints for each order, and the recipientList() EIP then fans out the message accordingly.
 
 ## <a name="chapter4"></a>Chapter 4: Advanced Camel EIPs, Error Handling, and Testing Strategies
 
