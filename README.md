@@ -10582,63 +10582,3104 @@ This test case directly verifies that our Dead Letter Channel configuration corr
 
 #### <a name="chapter5part1"></a>Chapter 5 - Part 1: Auto-Configuration and Camel Spring Boot Starters Deep Dive
 
+In the dynamic landscape of enterprise integration, the ability to rapidly develop, configure, and deploy robust integration solutions is paramount. Apache Camel, when combined with Spring Boot, offers an exceptionally powerful and agile platform for achieving this. At the heart of this synergy lies Spring Boot's intelligent auto-configuration mechanism and the specialized Camel Spring Boot Starters. This lesson delves deep into how these features dramatically simplify the setup and usage of Apache Camel in a Spring Boot environment, enabling developers to focus on defining integration logic rather than wrestling with intricate setup. We will explore how auto-configuration reduces boilerplate code, how starters bundle necessary dependencies and configurations, and how this combination provides a seamless "just works" experience for building sophisticated integration workflows, such as our E-commerce Order Processing system.
+
 #### <a name="chapter5part1.1"></a>Chapter 5 - Part 1.1: Understanding Spring Boot Auto-Configuration
+
+Spring Boot auto-configuration is a cornerstone feature designed to simplify the development of Spring applications. Its primary goal is to automatically configure your Spring application based on the dependencies present on your classpath. This "convention over configuration" approach significantly reduces the need for explicit XML or Java-based configuration, allowing developers to get started quickly and focus on business logic.
+
+**The "How" of Auto-Configuration**
+
+At a high level, Spring Boot achieves auto-configuration through several key mechanisms:
+
+- Classpath Detection: When your application starts, Spring Boot scans the classpath for specific classes. For example, if it finds spring-webmvc on the classpath, it understands that you're building a web application and automatically configures a dispatcher servlet, embedded server (like Tomcat or Jetty), and other web-related settings.
+- @Conditional Annotations: Spring Boot uses various @Conditional annotations to determine when an auto-configuration class should be applied. These conditions can check for the presence or absence of specific classes, beans, properties, or even specific environment variables.
+  - @ConditionalOnClass: Activates configuration only if specific classes are present on the classpath.
+  - @ConditionalOnMissingBean: Activates configuration only if a bean of a specific type is not already defined by the user.
+  - @ConditionalOnProperty: Activates configuration only if a specific Spring property is set to a certain value.
+  - @ConditionalOnWebApplication: Activates configuration only if the application is a web application.
+- spring.factories: Auto-configuration classes are registered in a special file named spring.factories located in the META-INF directory of JAR files. Spring Boot scans these files at startup to discover all available auto-configuration classes and attempts to apply them based on their @Conditional annotations.
+
+**Benefits of Auto-Configuration**
+
+- **Reduced Boilerplate**: Developers spend less time writing repetitive configuration code.
+- **Faster Development**: Applications can be set up and run with minimal effort, accelerating the development cycle.
+- **Sensible Defaults**: Spring Boot provides intelligent default configurations that are suitable for most common use cases, which can then be easily overridden if needed.
+- **Extensibility**: While providing defaults, auto-configuration is highly extensible, allowing users to disable specific auto-configurations or provide their own custom configurations that take precedence.
+
+**Real-World Examples**
+
+- **Web Application Setup**: When you include spring-boot-starter-web in your project, Spring Boot automatically configures an embedded Tomcat server, Spring MVC, and JSON processing capabilities. You don't need to explicitly define a DispatcherServlet or an EmbeddedWebServerFactory bean; Spring Boot does it for you.
+- **Database Connection**: If you add spring-boot-starter-data-jpa and a database driver (e.g., h2 or postgresql) to your classpath, Spring Boot will automatically configure a DataSource bean and an EntityManagerFactory for your persistence layer. It will even try to connect to an in-memory database like H2 if no other database configuration is provided.
+- **Messaging with Kafka**: Including spring-kafka on the classpath leads to auto-configuration of KafkaTemplate and KafkaListenerContainerFactory beans, simplifying the setup for producing and consuming messages with Kafka.
+
+**Hypothetical Scenario: Automated Order Tracking**
+
+Imagine an order tracking service that needs to send real-time updates via email. If you simply add a Mail Starter dependency (e.g., spring-boot-starter-mail) to your project, along with basic SMTP server properties in application.properties, Spring Boot would automatically configure a JavaMailSender bean. You could then just inject and use this bean to send emails, without writing any FactoryBean or DataSource setup code for the mail sender. If the spring-boot-starter-mail wasn't on the classpath, or if specific mail properties were missing, the auto-configuration for JavaMailSender would simply not kick in.
 
 #### <a name="chapter5part1.2"></a>Chapter 5 - Part 1.2: Apache Camel Spring Boot Starters Deep Dive
 
+Building on the power of Spring Boot's auto-configuration, Apache Camel provides its own set of Spring Boot Starters. These starters are special Maven/Gradle dependencies that allow you to easily integrate specific Camel components and features into your Spring Boot application. They effectively bridge the gap, ensuring that Camel's extensive ecosystem benefits from Spring Boot's convention-over-configuration philosophy.
+
+**What are Camel Spring Boot Starters?**
+
+A Camel Spring Boot Starter is essentially a convenience dependency that:
+
+- **Bundles necessary dependencies**: It pulls in all the required transitive dependencies for a specific Camel component or feature (e.g., camel-file for file operations, camel-jms for JMS messaging).
+- **Triggers Camel-specific auto-configuration**: When a Camel starter is detected on the classpath, it activates the relevant Camel auto-configuration classes. These classes are responsible for setting up the CamelContext and configuring the associated Camel components as Spring beans, making them readily available for use in your routes.
+- **Provides sensible defaults**: Just like core Spring Boot auto-configuration, Camel starters often provide default configurations for the components they enable, which can then be easily overridden using Spring Boot's externalized configuration.
+
+The most fundamental starter is camel-spring-boot-starter. This starter provides the core integration between Camel and Spring Boot, automatically configuring a CamelContext instance and making it available as a Spring bean. All other component-specific Camel starters build upon this foundation.
+
+**Common Camel Spring Boot Starters (Examples)**
+
+- camel-spring-boot-starter: The core starter for integrating Apache Camel with Spring Boot. It provides the auto-configured CamelContext.
+- camel-file-starter: Adds the file component, enabling interaction with file systems for reading, writing, and polling files.
+- camel-jms-starter: Integrates the jms component, allowing communication with JMS brokers like ActiveMQ or RabbitMQ (via AMQP).
+- camel-http-starter / camel-jetty-starter / camel-servlet-starter: For building RESTful services or consuming HTTP endpoints. These enable various HTTP client/server capabilities.
+- camel-jackson-starter: Provides data format support for JSON marshalling/unmarshalling using Jackson.
+
+**The Synergy: Auto-Configuration and Starters**
+
+When you add a Camel starter to your project, the following interaction typically occurs:
+
+- You declare a starter dependency in your pom.xml (e.g., camel-file-starter).
+- During the build, this starter brings in camel-file (the actual Camel component library) and camel-spring-boot-starter (if not already present) as transitive dependencies.
+- When the Spring Boot application starts, the camel-spring-boot-starter dependency triggers the auto-configuration for the CamelContext.
+- The camel-file-starter dependency triggers the auto-configuration specific to the file component. This auto-configuration typically detects the presence of the camel-file library and, using @ConditionalOnClass or similar conditions, creates a FileComponent bean within the CamelContext.
+- This FileComponent is then ready for use in your Camel routes without any explicit bean definition in your Application.java or separate configuration files.
+
+This powerful combination means that for our "E-commerce Order Processing" case study, enabling new integration points is as simple as adding a dependency. Want to process orders from a file system? Add camel-file-starter. Need to publish order events to a message broker? Add camel-jms-starter. The components just become available for use in your routes, leveraging sensible defaults.
+
 #### <a name="chapter5part1.3"></a>Chapter 5 - Part 1.3: Practical Examples: E-commerce Order Processing
+
+Let's illustrate how auto-configuration and Camel Spring Boot Starters work in practice within our E-commerce Order Processing system.
+
+**Example 1: Core CamelContext Auto-Configuration**
+
+We start with a basic Spring Boot application and add the core camel-spring-boot-starter. This alone is enough to get a CamelContext up and running.
+
+**pom.xml snippet:**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version> <!-- Use a recent Spring Boot version -->
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.ecommerce.orders</groupId>
+    <artifactId>order-processing-service</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>order-processing-service</name>
+    <description>E-commerce Order Processing with Camel and Spring Boot</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <camel.version>4.4.0</camel.version> <!-- Align with latest Camel 4.x -->
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <!-- Core Camel Spring Boot Starter -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-spring-boot-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+**OrderProcessingApplication.java:**
+
+```java
+package com.ecommerce.orders;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class OrderProcessingApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(OrderProcessingApplication.class, args);
+    }
+}
+```
+
+**SimpleOrderRoute.java:**
+
+```java
+package com.ecommerce.orders;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+// Marking this class as a Spring Component ensures Spring Boot discovers it
+// and automatically adds it to the auto-configured CamelContext.
+@Component
+public class SimpleOrderRoute extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // This route will log a simple message.
+        // The "timer" component is available because camel-spring-boot-starter often includes
+        // some basic components or relies on camel-base which provides it.
+        from("timer:hello?period=5000") // Triggers every 5 seconds
+            .log("Order Processing Service: Hello from Camel! Time: ${header.firedTime}");
+    }
+}
+```
+
+When you run OrderProcessingApplication, you'll see logs from Camel indicating that the CamelContext has started and the SimpleOrderRoute is running. This demonstrates that just by adding camel-spring-boot-starter, Spring Boot automatically finds and registers your RouteBuilder instances with an auto-configured CamelContext.
+
+**Example 2: Auto-Configuration for the File Component**
+
+Let's extend our order processing system to ingest new order files from a specific directory, a concept we touched upon in Module 3. With auto-configuration, we don't need to manually configure the FileComponent.
+
+Add camel-file-starter to pom.xml:
+
+```java
+        <!-- Core Camel Spring Boot Starter -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-spring-boot-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <!-- Add the File Component Starter -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-file-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+```
+
+**Create a new FileOrderIngestionRoute.java:**
+
+```java
+package com.ecommerce.orders;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class FileOrderIngestionRoute extends RouteBuilder {
+
+    // Define a directory to watch for new order files.
+    // Make sure this directory exists in your project's root or a specified path.
+    // For example, create a 'data/inbox' folder.
+    private static final String INPUT_DIR = "file:data/inbox?delete=true"; // Delete file after processing
+
+    @Override
+    public void configure() throws Exception {
+        // Route to consume files from the inbox directory
+        from(INPUT_DIR)
+            .routeId("fileOrderIngestionRoute") // Assign a unique ID to the route
+            .log("Received new order file: ${header.CamelFileName}. Content:\n${body}")
+            .to("log:com.ecommerce.orders.FileOrderLogger?showHeaders=true&showBody=true");
+            // In a real scenario, this would then process the order, e.g.,
+            // .to("direct:processOrder"); // Send to another route for processing
+    }
+}
+```
+
+**How it works:**
+
+- By adding camel-file-starter, Spring Boot's auto-configuration detects the file component.
+- It automatically creates and registers an instance of FileComponent within the CamelContext.
+- When FileOrderIngestionRoute is deployed, Camel can instantly resolve file:data/inbox as a valid endpoint without any explicit FileComponent bean definition from your side.
+
+To test this, create a directory data/inbox in your project's root. Then, while the application is running, drop a text file (e.g., order123.txt with content "New Order Details") into the inbox directory. You will observe logs similar to:
+
+```
+INFO  [fileOrderIngestionRoute] Received new order file: order123.txt. Content:
+New Order Details
+INFO  [com.ecommerce.orders.FileOrderLogger] Exchange[ExchangePattern: InOnly, BodyType: String, Body: New Order Details, Headers: {CamelFileAbsolute=true, CamelFileAbsolutePath=..., CamelFileLastModified=..., ...}]
+```
+
+This clearly illustrates the "it just works" nature facilitated by the starters and auto-configuration.
+
+**Example 3: Integrating with JMS for Asynchronous Processing**
+
+Recall from Module 3 that JMS is crucial for asynchronous order processing. Let's integrate camel-jms-starter to handle order messages on a queue.
+
+First, you'll need a JMS broker. For development, ActiveMQ is a common choice. We'll include its Spring Boot starter as well.
+
+**Add JMS/ActiveMQ Starters to pom.xml:**
+
+```xml
+        <!-- Core Camel Spring Boot Starter -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-spring-boot-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <!-- Add the File Component Starter -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-file-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <!-- Add the Camel JMS Starter -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-jms-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <!-- Spring Boot Starter for ActiveMQ, which provides a ConnectionFactory -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-activemq</artifactId>
+        </dependency>
+```
+
+Note: We are adding spring-boot-starter-activemq here because camel-jms-starter relies on a configured JmsConnectionFactory bean to connect to a broker. Spring Boot's ActiveMQ starter will provide this JmsConnectionFactory automatically.
+
+**Create a new JmsOrderProcessingRoute.java:**
+
+```java
+package com.ecommerce.orders;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class JmsOrderProcessingRoute extends RouteBuilder {
+
+    private static final String ORDERS_QUEUE = "orders.new"; // Define the JMS queue name
+
+    @Override
+    public void configure() throws Exception {
+        // Route to consume messages from the 'orders.new' JMS queue
+        from("jms:" + ORDERS_QUEUE)
+            .routeId("jmsOrderIngestionRoute")
+            .log("Received new order from JMS queue '${header.JMSDestination}': ${body}")
+            .to("log:com.ecommerce.orders.JmsOrderLogger?showHeaders=true&showBody=true");
+
+        // Simple route to produce a message to the JMS queue for testing
+        // This simulates an upstream service placing an order onto the queue.
+        from("timer:generateOrder?period=10000&delay=5000") // Every 10 seconds, after an initial 5s delay
+            .routeId("generateJmsOrderRoute")
+            .setBody(simple("{\"orderId\": \"ORD-${random(1000,9999)}\", \"product\": \"Laptop\", \"quantity\": 1}"))
+            .log("Generated simulated order for JMS: ${body}")
+            .to("jms:" + ORDERS_QUEUE);
+    }
+}
+```
+
+**How it works:**
+
+- spring-boot-starter-activemq automatically detects the ActiveMQ client libraries and configures an ActiveMQConnectionFactory bean.
+- camel-jms-starter detects this JmsConnectionFactory and automatically configures a JmsComponent instance within the CamelContext, pre-wired to use the auto-configured connection factory.
+- Now, the jms:orders.new endpoint becomes immediately usable in your Camel routes for both consuming and producing messages without any manual JmsComponent bean definition.
+
+When you run the application, you'll see messages generated by the timer route being sent to the orders.new JMS queue and then immediately consumed and logged by the jms consumer route. This seamless integration highlights the power of auto-configuration through starters.
 
 #### <a name="chapter5part2"></a>Chapter 5 - Part 2: Externalizing Configuration with `application.properties` and YAML
 
+In modern enterprise integration, especially with microservices built on Spring Boot and Apache Camel, it's crucial to decouple configuration details from the application's codebase. Hardcoding values like database credentials, API keys, file paths, or message queue destinations directly into the application creates rigidity, hinders deployment flexibility across different environments (development, testing, production), and poses security risks. Externalizing configuration allows the same application artifact (JAR or WAR) to be deployed in various environments without recompilation, with environment-specific settings injected at runtime. This practice enhances maintainability, promotes consistency, and improves security by keeping sensitive data out of version control and application code, making your Camel Spring Boot applications robust and adaptable.
+
 #### <a name="chapter5part2.1"></a>Chapter 5 - Part 2.1: Understanding Spring Boot's Configuration Mechanism
+
+Spring Boot provides a powerful and flexible mechanism for externalizing configuration. At its core, it uses an Environment abstraction that aggregates properties from various property sources. When your Spring Boot application starts, it automatically searches for and loads properties from a predefined set of locations and sources. These properties are then accessible throughout your application, enabling you to dynamically configure components, services, and, importantly for this course, your Apache Camel routes.
+
+**application.properties: Key-Value Configuration**
+
+The traditional and most straightforward way to define external configuration in Spring Boot is through application.properties files. These files are typically placed in the src/main/resources directory of your Spring Boot project, or alongside the packaged JAR file.
+
+**Syntax:**
+
+application.properties files use a simple key-value pair syntax:
+
+```
+key=value
+```
+
+**Key Characteristics:**
+
+- **Simplicity**: Easy to read and write for basic configurations.
+- **Flat Structure**: Primarily a flat list of key-value pairs, though hierarchical keys can be simulated using dots (e.g., server.port).
+- **Default Loading**: Spring Boot automatically loads application.properties from several default locations, including the classpath (e.g., src/main/resources/application.properties) and the current directory where the application is run.
+
+**Example 1: Basic application.properties for E-commerce Order Processing**
+
+Let's say our E-commerce Order Processing system, introduced in Module 1, needs to configure the input directory for order files, the JMS queue name for new orders, and an external API endpoint for product validation.
+
+```
+# application.properties
+# --- E-commerce Order Processing Configuration ---
+
+# File component configuration for incoming orders
+order.input.directory=file:data/input/orders
+
+# JMS component configuration for new order queue
+order.jms.queue.name=newOrdersQueue
+
+# External API for product validation
+product.validation.api.url=http://api.external.com/products/validate
+product.validation.api.timeout=5000
+```
+
+In this example:
+
+- order.input.directory specifies the path where new order files will be picked up by a Camel file component.
+- order.jms.queue.name defines the name of the JMS queue for asynchronous order processing.
+- product.validation.api.url and product.validation.api.timeout are settings for an HTTP client connecting to an external service.
+
+**YAML (application.yml): Hierarchical and Human-Friendly Configuration**
+
+YAML (YAML Ain't Markup Language) is another popular format for externalizing configuration in Spring Boot. It offers a more structured, hierarchical, and often more readable alternative to .properties files, especially for complex configurations.
+
+**Syntax:**
+
+YAML uses indentation to represent hierarchy. Key-value pairs are separated by a colon (:).
+
+```yaml
+parent:
+  child: value
+  another_child: another_value
+list_of_items:
+  - item1
+  - item2
+```
+
+**Key Characteristics:**
+
+- **Hierarchy**: Naturally supports nested structures, which can better represent complex configuration objects.
+- **Readability**: Often considered more human-readable due to its clean syntax and reduced redundancy.
+- **Whitespace Sensitive**: Indentation is crucial for defining structure.
+- **Default Loading**: Spring Boot automatically loads application.yml (and application.yaml) from the same default locations as application.properties. If both application.properties and application.yml are present, application.yml generally takes precedence for overlapping properties unless explicitly configured otherwise.
+
+**Example 2: Equivalent YAML Configuration for E-commerce Order Processing**
+
+Using the same configuration settings as above, here's how they would look in application.yml:
+
+```yaml
+# application.yml
+# --- E-commerce Order Processing Configuration ---
+
+order:
+  input:
+    directory: file:data/input/orders
+  jms:
+    queue:
+      name: newOrdersQueue
+product:
+  validation:
+    api:
+      url: http://api.external.com/products/validate
+      timeout: 5000
+```
+
+Notice how order.input.directory becomes order.input.directory under the order and input keys. This hierarchical structure can make configurations much clearer, especially for nested objects like database settings or complex component configurations.
 
 #### <a name="chapter5part2.2"></a>Chapter 5 - Part 2.2: Accessing Externalized Properties in Spring Boot and Camel
 
+Once properties are defined in application.properties or application.yml, Spring Boot makes them available throughout your application. There are several ways to access them.
+
+**Injecting Properties with @Value**
+
+The most common way to inject a single property value into a Spring-managed component (like a service, repository, or a Camel route builder) is using the @Value annotation.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderProcessingRoute extends RouteBuilder {
+
+    // Inject the order input directory from configuration
+    @Value("${order.input.directory}")
+    private String orderInputDirectory;
+
+    // Inject the JMS queue name
+    @Value("${order.jms.queue.name}")
+    private String newOrdersQueueName;
+
+    // Inject the product validation API URL
+    @Value("${product.validation.api.url}")
+    private String productValidationApiUrl;
+
+    // Inject the product validation API timeout with a default value
+    @Value("${product.validation.api.timeout:3000}") // Default to 3000ms if not found
+    private int productValidationApiTimeout;
+
+    @Override
+    public void configure() throws Exception {
+        // Log the configured values for verification
+        log.info("Configured Order Input Directory: {}", orderInputDirectory);
+        log.info("Configured New Orders JMS Queue: {}", newOrdersQueueName);
+        log.info("Configured Product Validation API URL: {}", productValidationApiUrl);
+        log.info("Configured Product Validation API Timeout: {}ms", productValidationApiTimeout);
+
+        // Example Camel route using injected properties
+        from(orderInputDirectory)
+            .routeId("file-to-jms-order-route")
+            .log("Received new order file: ${file:name}")
+            // Assume 'jms' component is configured elsewhere, e.g., via auto-configuration
+            .to("jms:" + newOrdersQueueName)
+            .log("Order file sent to JMS queue: " + newOrdersQueueName);
+
+        // Example route for product validation (simplified)
+        from("direct:validateProduct")
+            .routeId("product-validation-route")
+            .log("Calling product validation API at: " + productValidationApiUrl)
+            // Example usage with a different Camel component like HTTP
+            .setHeader("CamelHttpMethod", constant("GET"))
+            .toD(productValidationApiUrl + "/${body.productId}?connectTimeout=" + productValidationApiTimeout)
+            .log("Product validation API response: ${body}");
+    }
+}
+```
+
+**Explanation:**
+
+- @Value("${key.name}") tells Spring to look up the property key.name in its Environment and inject its value into the annotated field.
+- You can provide a default value using the syntax @Value("${key.name:defaultValue}"). This is useful if a property might not always be present, preventing application startup failures.
+- The Camel routes then use these injected variables, making the route definitions dynamic and configurable without changing code. For instance, from(orderInputDirectory) uses the value loaded from order.input.directory.
+
+**Using Property Placeholders Directly in Camel DSL*
+
+Camel's Java DSL (Domain Specific Language) also supports property placeholders directly within endpoint URIs and other string-based configurations, leveraging Spring Boot's property resolution. This is often a cleaner way for simple property substitutions within routes.
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderProcessingRouteWithPlaceholders extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Using property placeholders directly in endpoint URIs
+        // The properties will be resolved from application.properties or application.yml
+        from("{{order.input.directory}}")
+            .routeId("file-to-jms-order-route-placeholders")
+            .log("Received new order file: ${file:name} from configured directory.")
+            .to("jms:{{order.jms.queue.name}}")
+            .log("Order file sent to JMS queue using configured name.");
+
+        // More complex example might involve injecting a URL fragment
+        from("direct:checkStatus")
+            .routeId("order-status-check")
+            .log("Checking order status for ID: ${body}")
+            .to("http://{{order.status.service.host}}/{{order.status.service.path}}/${body}");
+    }
+}
+```
+
+For this to work, ensure your application.properties (or application.yml) contains these keys:
+
+```
+# application.properties
+# ... (previous properties) ...
+order.status.service.host=localhost:8081
+order.status.service.path=api/orders/status
+```
+
+Note: When using property placeholders directly in Camel routes, the camel-spring-boot-starter automatically configures a PropertiesComponent that can resolve these placeholders against Spring's Environment.
+
 #### <a name="chapter5part2.3"></a>Chapter 5 - Part 2.3: Configuration Profiles for Environment-Specific Settings
+
+One of the most powerful features of Spring Boot's externalized configuration is the concept of profiles. Profiles allow you to define different sets of configurations for different environments (e.g., development, testing, staging, production). This means you can have separate application.properties or application.yml files for each environment, and Spring Boot will activate the appropriate one based on the active profile.
+
+**Defining Profile-Specific Properties**
+
+You define profile-specific properties by creating files named application-{profile}.properties or application-{profile}.yml.
+
+**Example 3: E-commerce Configuration for Development vs. Production**
+
+Let's imagine our E-commerce system needs to:
+
+- Pick up order files from a local directory in dev.
+- Use a watched directory on a server for prod.
+- Connect to an in-memory ActiveMQ instance for dev.
+- Connect to a dedicated ActiveMQ broker for prod.
+- Log Verbosity: DEBUG for dev, INFO for prod.
+
+**src/main/resources/application.yml (Default/Common properties):**
+
+```yaml
+# application.yml
+# Common properties applicable to all environments, or default fallback values
+spring:
+  application:
+    name: order-processing-service
+
+# Default logging level (can be overridden by profiles)
+logging:
+  level:
+    root: INFO
+
+order:
+  jms:
+    queue:
+      name: newOrdersQueue # Common queue name, but broker URL will differ
+```
+
+**src/main/resources/application-dev.yml (Development Profile):**
+
+```yaml
+# application-dev.yml
+order:
+  input:
+    directory: file:./data/dev/input/orders # Local input for dev
+  jms:
+    broker:
+      url: vm://localhost?broker.persistent=false # In-memory ActiveMQ for dev
+logging:
+  level:
+    root: DEBUG # More verbose logging in dev
+```
+
+**src/main/resources/application-prod.yml (Production Profile):**
+
+```yaml
+# application-prod.yml
+order:
+  input:
+    directory: file:/opt/order-service/prod/input # Server directory for prod
+  jms:
+    broker:
+      url: tcp://activemq-prod:61616 # Dedicated ActiveMQ broker for prod
+logging:
+  level:
+    root: INFO # Standard logging in prod
+```
+
+When a profile is active, Spring Boot will load both the base application.yml and the profile-specific application-{profile}.yml. Properties in the profile-specific file will override any conflicting properties in the base file.
+
+**Activating Profiles**
+
+You can activate a Spring profile in several ways:
+
+- **application.properties/application.yml**: Set the spring.profiles.active property in your application.properties or application.yml (or an overriding source).
+
+```
+# application.properties
+spring.profiles.active=dev
+```
+
+This is often used to set a default profile, which can then be overridden.
+
+- **Command-line Argument**: When running your JAR file, use the --spring.profiles.active argument:
+
+```
+java -jar your-app.jar --spring.profiles.active=prod
+```
+
+This is the most common way to activate profiles for different deployments.
+
+- **Environment Variable**: Set the SPRING_PROFILES_ACTIVE environment variable:
+
+```
+export SPRING_PROFILES_ACTIVE=prod
+java -jar your-app.jar
+```
+
+- **Programmatic Activation (Less common for external config)**: You can set profiles programmatically within your main method before the SpringApplication runs, though this typically defeats the purpose of externalization.
+
+When multiple profiles are active, Spring processes them in order, with later profiles overriding earlier ones. For example, spring.profiles.active=dev,integration would mean properties in application-integration.yml would override those in application-dev.yml if they conflict.
 
 #### <a name="chapter5part2.4"></a>Chapter 5 - Part 2.4: Property Overriding and Precedence
 
+Spring Boot's configuration system is highly flexible, allowing properties to be defined in many places. It follows a specific order of precedence, meaning that a property defined in a "higher-precedence" source will override the same property defined in a "lower-precedence" source. Understanding this order is crucial for troubleshooting and ensuring your application picks up the correct settings.
+
+Here's a simplified order of precedence, from highest to lowest:
+
+- **Command-line arguments**: Properties passed as java -jar app.jar --property.name=value.
+- **SpringApplication.setDefaultProperties**: Programmatically configured default properties.
+- **Operating System environment variables**: E.g., SERVER_PORT=8080 (converted from server.port).
+- **Java System properties**: E.g., -Dserver.port=8080.
+- **application.properties / application.yml files outside of your packaged jar**:
+  - In the current directory.
+  - In a /config subdirectory of the current directory.
+- **application.properties / application.yml files inside your packaged jar**:
+  - In the classpath root (e.g., src/main/resources).
+  - In the classpath:/config package.
+- **@PropertySource annotations**: For custom property files.
+- **Default properties**: Defined using SpringApplication.setDefaultProperties.
+
+**Example 4: Overriding a Property at Runtime**
+
+Let's use our E-commerce case study. The order.input.directory is set in application-prod.yml to /opt/order-service/prod/input.
+
+**application-prod.yml:**
+
+```yaml
+order:
+  input:
+    directory: file:/opt/order-service/prod/input
+```
+
+Now, imagine during a specific test or temporary setup, you need to override this path without changing the application-prod.yml file.
+
+**Using a command-line argument:**
+
+```
+java -jar order-processing-service.jar --spring.profiles.active=prod --order.input.directory=file:/tmp/special-orders
+```
+
+In this scenario, the orderInputDirectory in OrderProcessingRoute would resolve to file:/tmp/special-orders, because command-line arguments have the highest precedence.
+
+**Using an environment variable:**
+
+```
+export ORDER_INPUT_DIRECTORY=file:/var/log/backup-orders
+java -jar order-processing-service.jar --spring.profiles.active=prod
+```
+
+Here, orderInputDirectory would be file:/var/log/backup-orders. Spring Boot automatically converts environment variable names (e.g., ORDER_INPUT_DIRECTORY) to their property-key equivalents (order.input.directory).
+
+This overriding mechanism provides immense flexibility, allowing operations teams to fine-tune application behavior in production environments without requiring code changes or redeployments.
+
 #### <a name="chapter5part2.5"></a>Chapter 5 - Part 2.5: Practical Examples and Demonstrations
+
+Let's put these concepts into practice using our E-commerce Order Processing case study. We'll set up a simple Camel route that processes incoming order files and sends them to a JMS queue. We'll externalize the file input path and the JMS queue name.
+
+**Project Setup:**
+
+First, ensure your pom.xml has the necessary dependencies (as covered in previous modules):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version> <!-- Use a modern Spring Boot version -->
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.example.ecommerce</groupId>
+    <artifactId>order-processor</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>order-processor</name>
+    <description>E-commerce Order Processing Service with Camel and Spring Boot</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <camel.version>4.4.0</camel.version> <!-- Ensure this matches Spring Boot compatibility -->
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel.springboot</groupId>
+            <artifactId>camel-spring-boot-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-file</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-jms</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.activemq</groupId>
+            <artifactId>activemq-broker</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-activemq</artifactId>
+        </dependency>
+        <!-- Testing dependencies -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-test-spring-junit5</artifactId>
+            <version>${camel.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+**Application Class:**
+
+```java
+// src/main/java/com/example/ecommerce/orderprocessor/OrderProcessorApplication.java
+package com.example.ecommerce.orderprocessor;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class OrderProcessorApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderProcessorApplication.class, args);
+    }
+}
+```
+
+**Camel Route with application.properties and @Value:**
+
+- **Create src/main/resources/application.properties**:
+
+```
+# application.properties
+# Configuration for E-commerce Order Processor
+
+# Camel file component configuration
+order.file.input.path=data/input/orders
+order.file.input.delay=5000 # Poll every 5 seconds
+
+# Camel JMS component configuration
+order.jms.queue.name=newOrdersQueue
+order.jms.broker.url=vm://localhost?broker.persistent=false # In-memory ActiveMQ
+```
+
+- **Create the Camel Route (src/main/java/com/example/ecommerce/orderprocessor/routes/OrderIngestionRoute.java):**
+
+```java
+package com.example.ecommerce.orderprocessor.routes;
+
+import jakarta.jms.ConnectionFactory;
+import org.apache.activemq.artemis.jms.client.ActiveMQJMSConnectionFactory;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.jms.JmsComponent;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderIngestionRoute extends RouteBuilder {
+
+    // Inject properties using @Value
+    @Value("${order.file.input.path}")
+    private String fileInputPath;
+
+    @Value("${order.file.input.delay}")
+    private long fileInputDelay;
+
+    @Value("${order.jms.queue.name}")
+    private String jmsQueueName;
+
+    @Value("${order.jms.broker.url}")
+    private String jmsBrokerUrl;
+
+    // Configure the JMS component dynamically
+    @Bean
+    public JmsComponent jmsComponent() {
+        // Using ActiveMQ Artemis connection factory, adjust if using different broker
+        ConnectionFactory connectionFactory = new ActiveMQJMSConnectionFactory(jmsBrokerUrl);
+        JmsComponent jmsComponent = new JmsComponent();
+        jmsComponent.setConnectionFactory(connectionFactory);
+        return jmsComponent;
+    }
+
+    @Override
+    public void configure() throws Exception {
+        // Log the resolved configuration values
+        log.info("Configured File Input Path: {}", fileInputPath);
+        log.info("Configured File Input Delay: {}ms", fileInputDelay);
+        log.info("Configured JMS Queue Name: {}", jmsQueueName);
+        log.info("Configured JMS Broker URL: {}", jmsBrokerUrl);
+
+        // Define the Camel route using the injected properties
+        from("file:" + fileInputPath + "?delay=" + fileInputDelay)
+            .routeId("order-file-ingestion")
+            .log("Processing new order file: ${file:name}")
+            .to("jms:" + jmsQueueName) // Use the configured JMS queue
+            .log("Order file ${file:name} successfully sent to JMS queue: " + jmsQueueName);
+    }
+}
+```
+
+- **Create data/input/orders directory**: Create src/main/resources/data/input/orders relative to your project root. This is where Camel will look for files.
+
+**Running the application:**
+
+- Build the project: mvn clean install
+- Run the application: java -jar target/order-processor-0.0.1-SNAPSHOT.jar
+
+When you run, you'll see log messages indicating the configured paths and queue names. If you place a file (e.g., order1.txt) into src/main/resources/data/input/orders, Camel will pick it up and log its processing.
+
+**Demonstrating Profiles with YAML**
+
+Let's extend the above example to use profiles for different JMS broker URLs and file input paths for dev and prod environments.
+
+- Remove application.properties.
+
+- Create src/main/resources/application.yml (Base configuration):
+
+```yaml
+# application.yml
+spring:
+  application:
+    name: order-processing-service
+
+# Common configurations, or defaults
+order:
+  file:
+    input:
+      delay: 3000 # Default delay of 3 seconds
+  jms:
+    queue:
+      name: newOrdersQueue # Common queue name
+```
+
+- Create src/main/resources/application-dev.yml (Development profile):
+
+```yaml
+# application-dev.yml
+order:
+  file:
+    input:
+      path: data/dev/input/orders # Dev specific input path
+  jms:
+    broker:
+      url: vm://localhost?broker.persistent=false # In-memory ActiveMQ for dev
+```
+
+- Create src/main/resources/application-prod.yml (Production profile):
+
+```yaml
+# application-prod.yml
+order:
+  file:
+    input:
+      path: /opt/ecommerce/prod/orders # Prod specific input path on server
+  jms:
+    broker:
+      url: tcp://activemq-prod:61616 # Dedicated ActiveMQ broker for prod
+```
+
+- Modify OrderIngestionRoute.java to use the jmsBrokerUrl property directly in the bean:
+
+```java
+package com.example.ecommerce.orderprocessor.routes;
+
+import jakarta.jms.ConnectionFactory;
+import org.apache.activemq.artemis.jms.client.ActiveMQJMSConnectionFactory;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.jms.JmsComponent;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderIngestionRoute extends RouteBuilder {
+
+    @Value("${order.file.input.path}")
+    private String fileInputPath;
+
+    @Value("${order.file.input.delay}")
+    private long fileInputDelay;
+
+    @Value("${order.jms.queue.name}")
+    private String jmsQueueName;
+
+    @Value("${order.jms.broker.url}") // This property will be profile-specific
+    private String jmsBrokerUrl;
+
+    // Configure the JMS component dynamically using the injected broker URL
+    @Bean
+    public JmsComponent jmsComponent() {
+        log.info("Initializing JMS Component with Broker URL: {}", jmsBrokerUrl);
+        ConnectionFactory connectionFactory = new ActiveMQJMSConnectionFactory(jmsBrokerUrl);
+        JmsComponent jmsComponent = new JmsComponent();
+        jmsComponent.setConnectionFactory(connectionFactory);
+        return jmsComponent;
+    }
+
+    @Override
+    public void configure() throws Exception {
+        log.info("Route configured with File Input Path: {}", fileInputPath);
+        log.info("Route configured with JMS Queue Name: {}", jmsQueueName);
+
+        from("file:" + fileInputPath + "?delay=" + fileInputDelay)
+            .routeId("order-file-ingestion")
+            .log("Processing new order file: ${file:name}")
+            .to("jms:" + jmsQueueName)
+            .log("Order file ${file:name} successfully sent to JMS queue: " + jmsQueueName);
+    }
+}
+```
+
+**Running with different profiles:**
+
+- **Development Profile**: Create a directory src/main/resources/data/dev/input/orders. java -jar target/order-processor-0.0.1-SNAPSHOT.jar --spring.profiles.active=dev You'll see logs indicating vm://localhost for the JMS broker and data/dev/input/orders for the file path.
+
+- **Production Profile (Simulated)**: You would not create /opt/ecommerce/prod/orders locally, but you can see the logs reflect the production settings. java -jar target/order-processor-00.1-SNAPSHOT.jar --spring.profiles.active=prod The logs will show tcp://activemq-prod:61616 for the JMS broker and /opt/ecommerce/prod/orders for the file path.
+
+This demonstrates how a single JAR can be configured for entirely different environments by simply activating a different profile.
 
 #### <a name="chapter5part3"></a>Chapter 5 - Part 3: Using Spring Beans and Services within Camel Routes
 
+In enterprise integration, the ability to seamlessly combine business logic implemented as reusable services with the routing capabilities of an integration framework is paramount. Spring Boot, with its robust Inversion of Control (IoC) container and dependency injection (DI) mechanism, provides an ideal environment for developing such services. When Apache Camel operates within a Spring Boot application, it gains direct access to this rich ecosystem, allowing you to leverage your Spring-managed beans and services directly within your integration routes. This integration ensures that your business logic remains modular, testable, and independent of the routing concerns, while Camel efficiently orchestrates the flow of messages through these services, ultimately leading to more maintainable and scalable integration solutions. For our E-commerce Order Processing case study, this means we can encapsulate complex validation, enrichment, or notification logic in dedicated Spring services and then simply invoke them from our Camel routes at the appropriate stages of the order workflow.
+
 #### <a name="chapter5part3.1"></a>Chapter 5 - Part 3.1: The Synergy of Spring and Camel
+
+Spring Boot applications are built around the concept of an ApplicationContext, which is the core container that manages the lifecycle of your application's components, known as beans. These beans are typically plain Java objects (POJOs) that are instantiated, configured, and wired together by the Spring container using dependency injection. This approach promotes loose coupling and testability.
+
+When Apache Camel runs within a Spring Boot application, a significant benefit arises: Camel's CamelContext automatically integrates with the Spring ApplicationContext. This means that any Spring bean defined in your Spring Boot application becomes discoverable and usable by Camel within its routes. This seamless integration allows you to:
+
+- **Encapsulate Business Logic**: Write complex business rules, data transformations, or external service interactions in standard Spring services (e.g., @Service or @Component classes).
+- **Leverage Spring Features**: Utilize all of Spring's powerful features within your integration logic, such as data access, transaction management, security, and external configuration.
+- **Promote Modularity and Testability**: Keep your integration routes focused purely on orchestration, delegating specific tasks to well-defined, testable Spring services.
+
+Consider our E-commerce Order Processing system. We might have a ProductService responsible for fetching product details from a database, an InventoryService for checking stock levels, or an OrderValidationService for applying business rules to incoming orders. Instead of embedding this logic directly within a Camel route, we can implement them as Spring beans and then simply invoke these beans from our routes. Camel acts as the conductor, orchestrating when and how these Spring services are called during the message flow.
 
 #### <a name="chapter5part3.2"></a>Chapter 5 - Part 3.2: Invoking Spring Beans using the bean EIP
 
+The bean Enterprise Integration Pattern (EIP) is the primary and most straightforward way to invoke a method on a Spring-managed bean directly from a Camel route. This EIP allows you to delegate specific processing steps to your Spring services.
+
+**How the bean EIP Works**
+
+When Camel encounters the bean EIP in a route, it performs the following steps:
+
+- **Bean Resolution**: It looks up the specified bean by its ID (name) in the Spring ApplicationContext.
+- **Method Invocation**: Once the bean instance is retrieved, Camel attempts to invoke a method on it. By default, Camel is quite intelligent about method selection:
+  - It first looks for a method named process or doProcess that accepts a single Exchange or Message argument.
+  - If no such method is found, it looks for a method that accepts a single argument matching the type of the Camel message body (in.body).
+  - If still not found, it tries to invoke a method that takes no arguments.
+  - You can explicitly specify the method to invoke using the method parameter (e.g., bean:myService?method=myCustomMethod).
+- **Argument Mapping**: Camel can automatically map parts of the Exchange (like the message body or headers) to method arguments, based on their types.
+- **Result Handling**: The return value of the invoked method will typically replace the current message body (in.body), or it can be discarded if the method returns void.
+
+**Practical Examples**
+
+Let's illustrate this with the "E-commerce Order Processing" case study. Imagine we need to validate an incoming order and then enrich it with additional product information.
+
+**Example 1: Basic Order Validation**
+
+First, define a simple Spring service for order validation:
+
+```java
+package com.example.ecommerce.service;
+
+import com.example.ecommerce.model.Order;
+import org.springframework.stereotype.Service;
+
+@Service("orderValidationService") // Define as a Spring service with a specific bean name
+public class OrderValidationService {
+
+    /**
+     * Validates an incoming order.
+     * This method is automatically invoked by Camel if it's the only suitable method
+     * or if explicitly specified.
+     *
+     * @param order The order object to validate, typically from the Camel message body.
+     * @return The validated order, or throws an exception if invalid.
+     * @throws IllegalArgumentException if the order is invalid.
+     */
+    public Order validateOrder(Order order) {
+        if (order == null) {
+            throw new IllegalArgumentException("Order cannot be null.");
+        }
+        if (order.getItems() == null || order.getItems().isEmpty()) {
+            throw new IllegalArgumentException("Order must contain items.");
+        }
+        if (order.getCustomerId() == null || order.getCustomerId().isEmpty()) {
+            throw new IllegalArgumentException("Order must have a customer ID.");
+        }
+
+        System.out.println("Order " + order.getOrderId() + " successfully validated.");
+        // In a real application, you might add more complex validation logic here.
+        return order; // Return the order if valid
+    }
+
+    /**
+     * An alternative validation method that could be explicitly called.
+     */
+    public boolean isValid(Order order) {
+        // More specific boolean validation logic
+        return order != null && order.getItems() != null && !order.getItems().isEmpty();
+    }
+}
+```
+
+Now, integrate this service into a Camel route:
+
+```java
+package com.example.ecommerce.route;
+
+import com.example.ecommerce.model.Order;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderProcessingRoute extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        // Define a simple dead letter channel for errors
+        errorHandler(deadLetterChannel("log:deadLetterChannel")
+            .useOriginalMessage()
+            .maximumRedeliveries(0)
+            .redeliveryDelay(0));
+
+        from("direct:incomingOrder") // Assume orders are sent to this direct endpoint
+            .routeId("orderValidationRoute")
+            .log("Received order for validation: ${body.orderId}")
+            .bean("orderValidationService", "validateOrder") // Invoke the 'validateOrder' method of the 'orderValidationService' bean
+            .log("Order ${body.orderId} passed validation.")
+            .to("direct:processValidatedOrder"); // Continue to the next stage
+    }
+}
+```
+
+In this example, when a message with an Order object in its body arrives at direct:incomingOrder, Camel will look up the orderValidationService bean and invoke its validateOrder method, passing the Order object from the message body as an argument. The return value (the validated Order) then replaces the message body for the next step.
+
+**Example 2: Order Enrichment with Explicit Method and Header Access**
+
+Suppose we have an OrderEnrichmentService that needs to fetch additional details based on orderId and a specific header.
+
+```java
+package com.example.ecommerce.service;
+
+import com.example.ecommerce.model.Order;
+import org.springframework.stereotype.Service;
+
+import java.util.Map;
+import java.util.UUID;
+
+@Service("orderEnrichmentService")
+public class OrderEnrichmentService {
+
+    /**
+     * Enriches an order with additional details based on its ID and a specific type.
+     * Camel can map message body to 'order' and header to 'enrichmentType'.
+     *
+     * @param order The order to enrich.
+     * @param enrichmentType A header value indicating the type of enrichment needed.
+     * @return The enriched order.
+     */
+    public Order enrichOrderDetails(Order order, String enrichmentType) {
+        System.out.println("Enriching order " + order.getOrderId() + " with type: " + enrichmentType);
+        // Simulate fetching additional details (e.g., from a database or external API)
+        // based on enrichmentType
+        if ("shipping".equalsIgnoreCase(enrichmentType)) {
+            order.setShippingAddress("123 Integration Lane, Tech City");
+            order.setShippingCost(10.50);
+        } else if ("customer".equalsIgnoreCase(enrichmentType)) {
+            order.setCustomerName("Integration Customer");
+            // Assume customerId is already set
+        }
+        order.addNote("Order enriched by " + enrichmentType + " service.");
+        return order;
+    }
+
+    /**
+     * An alternative method that processes the entire Camel Exchange if needed.
+     */
+    public void process(org.apache.camel.Exchange exchange) {
+        Order order = exchange.getIn().getBody(Order.class);
+        String enrichmentType = exchange.getIn().getHeader("EnrichmentType", String.class);
+        exchange.getIn().setBody(enrichOrderDetails(order, enrichmentType));
+    }
+}
+```
+
+And the route incorporating this:
+
+```java
+package com.example.ecommerce.route;
+
+import com.example.ecommerce.model.Order;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderEnrichmentRoute extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:processValidatedOrder") // Previous stage outputs here
+            .routeId("orderEnrichmentRoute")
+            .log("Preparing to enrich order: ${body.orderId}")
+            // Set a header that the enrichment service can use
+            .setHeader("EnrichmentType", constant("shipping"))
+            // Invoke 'enrichOrderDetails' method explicitly
+            .bean("orderEnrichmentService", "enrichOrderDetails")
+            .log("Order ${body.orderId} enriched with shipping details.")
+            .to("direct:finalOrderProcessing"); // Continue to the next stage
+    }
+}
+```
+
+In this case, we explicitly specified enrichOrderDetails as the method. Camel automatically maps the Order object from the message body to the first argument and the EnrichmentType header value to the enrichmentType string argument. This powerful mapping capability simplifies calling Spring services without needing to manually extract information from the Exchange within the service itself.
+
 #### <a name="chapter5part3.3"></a>Chapter 5 - Part 3.3: Integrating Spring Services with the process EIP
+
+While the bean EIP is excellent for direct method invocation, sometimes you need finer-grained control over the Camel Exchange object within your business logic. This is where implementing the org.apache.camel.Processor interface for your Spring-managed service comes in handy, used in conjunction with the process EIP.
+
+**Understanding the Processor Interface**
+
+The Processor interface is a core Camel concept, representing a single step in a Camel route where you can implement custom logic. It has a single method:
+
+```java
+void process(Exchange exchange) throws Exception;
+```
+
+This method provides full access to the Exchange object, allowing you to manipulate the inbound message, set outbound messages, read/write headers, set properties, handle exceptions, and perform complex transformations.
+
+When you have a Spring-managed bean that implements this interface, you can inject any other Spring dependencies into it using @Autowired, and then use this bean directly in your Camel route via the process() DSL.
+
+**Advantages of using Processor as a Spring Bean**
+
+- **Full Control**: Direct access to the Exchange object provides maximum flexibility for complex message manipulation, error handling, and conditional logic.
+- **Dependency Injection**: Being a Spring bean, your Processor implementation can @Autowired other Spring services (e.g., repositories, external clients) to perform its task, keeping your business logic clean and focused.
+- **Reusability**: A well-defined Processor can be reused across multiple routes.
+
+**Practical Example: Advanced Order Data Transformation**
+
+Let's say after validation and enrichment, we need to transform the order data into a specific format for an external fulfillment system, and this transformation requires looking up additional product codes from a database.
+
+First, define a Spring component that implements Processor and uses another Spring service:
+
+```java
+package com.example.ecommerce.processor;
+
+import com.example.ecommerce.model.Order;
+import com.example.ecommerce.model.OrderItem;
+import com.example.ecommerce.service.ProductCatalogService;
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Component("fulfillmentDataProcessor") // Make it a Spring bean
+public class FulfillmentDataProcessor implements Processor {
+
+    private final ProductCatalogService productCatalogService; // Inject another Spring service
+
+    @Autowired
+    public FulfillmentDataProcessor(ProductCatalogService productCatalogService) {
+        this.productCatalogService = productCatalogService;
+    }
+
+    @Override
+    public void process(Exchange exchange) throws Exception {
+        Order order = exchange.getIn().getBody(Order.class);
+
+        // Simulate a complex transformation for an external fulfillment system
+        // This might involve creating a Map or a specific DTO
+        Map<String, Object> fulfillmentData = new HashMap<>();
+        fulfillmentData.put("fulfillmentId", order.getOrderId() + "-FULFILL");
+        fulfillmentData.put("customerInfo", Map.of(
+            "id", order.getCustomerId(),
+            "name", order.getCustomerName(),
+            "address", order.getShippingAddress()
+        ));
+
+        // Transform order items, looking up internal product codes if necessary
+        // using the injected ProductCatalogService
+        if (order.getItems() != null) {
+            fulfillmentData.put("items", order.getItems().stream().map(item -> {
+                Map<String, Object> itemData = new HashMap<>();
+                itemData.put("productId", productCatalogService.getInternalProductId(item.getProductSku())); // Using injected service
+                itemData.put("quantity", item.getQuantity());
+                itemData.put("price", item.getPrice());
+                return itemData;
+            }).toList());
+        }
+
+        System.out.println("Transformed order " + order.getOrderId() + " for fulfillment.");
+        exchange.getIn().setBody(fulfillmentData); // The new message body for the next step
+        exchange.getIn().setHeader("Content-Type", "application/json"); // Set a header for the next endpoint
+    }
+}
+```
+
+Here's a minimal ProductCatalogService for demonstration:
+
+```java
+package com.example.ecommerce.service;
+
+import org.springframework.stereotype.Service;
+
+import java.util.Map;
+
+@Service
+public class ProductCatalogService {
+
+    private final Map<String, String> skuToInternalIdMap = Map.of(
+        "PROD001", "INT-SKU-12345",
+        "PROD002", "INT-SKU-67890",
+        "PROD003", "INT-SKU-54321"
+    );
+
+    public String getInternalProductId(String productSku) {
+        return skuToInternalIdMap.getOrDefault(productSku, productSku); // Return original if not found
+    }
+}
+```
+
+Now, the Camel route can simply reference this fulfillmentDataProcessor bean:
+
+```java
+package com.example.ecommerce.route;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class FulfillmentRoute extends RouteBuilder {
+
+    // Spring will automatically inject the FulfillmentDataProcessor bean here
+    private final FulfillmentDataProcessor fulfillmentDataProcessor;
+
+    public FulfillmentRoute(FulfillmentDataProcessor fulfillmentDataProcessor) {
+        this.fulfillmentDataProcessor = fulfillmentDataProcessor;
+    }
+
+    @Override
+    public void configure() {
+        from("direct:finalOrderProcessing") // Messages from previous enrichment route
+            .routeId("orderFulfillmentRoute")
+            .log("Preparing order for fulfillment: ${body.orderId}")
+            .process(fulfillmentDataProcessor) // Use the Spring-managed Processor bean
+            .log("Order ${headers.fulfillmentId} transformed for fulfillment. Sending to external system.")
+            .to("mock:fulfillmentSystem"); // Simulate sending to an external system
+    }
+}
+```
+
+Notice that we directly inject fulfillmentDataProcessor into the RouteBuilder constructor. This is Spring's standard dependency injection at work. Within the process() method, we have complete control over the Exchange and can perform intricate logic, including using the injected productCatalogService.
 
 #### <a name="chapter5part3.4"></a>Chapter 5 - Part 3.4: Direct Injection of Spring Beans into Route Builder
 
+Beyond using the bean or process EIPs, you might need to use Spring-managed beans directly within your RouteBuilder class itself. This is particularly useful for:
+
+- **Dynamic Endpoint Construction**: When endpoint URIs need to be determined at runtime based on configuration or business logic.
+- **Predicates and Expressions**: Using business logic from a service in choice().when() clauses or in message transformations.
+- **External Configuration**: Injecting configuration properties managed by Spring into your route logic.
+
+Since RouteBuilder classes in a Spring Boot Camel application are themselves typically managed as Spring beans (e.g., by adding @Component to them, as shown in previous examples), you can use standard Spring @Autowired annotation to inject any other Spring bean directly into your RouteBuilder.
+
+**Practical Example: Conditional Routing based on Service Logic**
+
+Let's enhance our E-commerce system. After an order is validated, we might want to route it to different processing queues based on whether it's a "premium" customer or a "standard" customer, where the logic for determining customer type resides in a CustomerService.
+
+First, define the CustomerService:
+
+```java
+package com.example.ecommerce.service;
+
+import com.example.ecommerce.model.Order;
+import org.springframework.stereotype.Service;
+
+@Service
+public class CustomerService {
+
+    /**
+     * Determines if a customer is a premium customer.
+     * In a real application, this would involve database lookups, external API calls, etc.
+     * @param customerId The ID of the customer.
+     * @return true if premium, false otherwise.
+     */
+    public boolean isPremiumCustomer(String customerId) {
+        // Simple logic for demonstration
+        return customerId != null && customerId.startsWith("PREM");
+    }
+}
+```
+
+Now, inject this CustomerService into the RouteBuilder to use its logic within a content-based router:
+
+```java
+package com.example.ecommerce.route;
+
+import com.example.ecommerce.service.CustomerService;
+import com.example.ecommerce.model.Order; // Assuming Order model exists
+import org.apache.camel.Exchange;
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+@Component
+public class CustomerTypeRoutingRoute extends RouteBuilder {
+
+    private final CustomerService customerService; // Injected Spring bean
+
+    @Autowired
+    public CustomerTypeRoutingRoute(CustomerService customerService) {
+        this.customerService = customerService;
+    }
+
+    @Override
+    public void configure() {
+        from("direct:processValidatedOrder") // After order validation
+            .routeId("customerTypeRouting")
+            .log("Determining customer type for order ${body.orderId}")
+            .choice()
+                .when(exchange -> { // Use a predicate that invokes the injected service
+                    Order order = exchange.getIn().getBody(Order.class);
+                    return customerService.isPremiumCustomer(order.getCustomerId());
+                })
+                    .log("Order ${body.orderId} for PREMIUM customer. Routing to premium queue.")
+                    .to("jms:queue:premiumOrders") // Use JMS component from Module 3
+                .otherwise()
+                    .log("Order ${body.orderId} for STANDARD customer. Routing to standard queue.")
+                    .to("jms:queue:standardOrders")
+            .end();
+    }
+}
+```
+
+In this example, the CustomerService bean is directly injected into CustomerTypeRoutingRoute. Inside the when() clause, a lambda expression (a Predicate<Exchange>) is used to invoke the isPremiumCustomer method of the injected customerService. This allows complex business logic that determines routing decisions to be cleanly encapsulated within a Spring service, promoting better separation of concerns.
+
 #### <a name="chapter5part3.5"></a>Chapter 5 - Part 3.5: Case Study: E-commerce Order Processing
+
+Let's integrate the concepts learned into our "E-commerce Order Processing" case study. We'll refine an existing route to incorporate validation and enrichment using Spring services. Recall from Module 3 that we had an file component for order imports. Let's imagine this file contains raw order data that needs immediate processing.
+
+**Scenario**: Orders arrive as JSON files in a directory. Before they can be sent for fulfillment or stored, they must be:
+
+- **Validated**: Ensure all essential fields are present and valid (e.g., customer ID, order items).
+- **Enriched**: Add shipping and customer details based on existing business logic.
+- **Transformed**: Convert into a specific format for the fulfillment system.
+- **Routed**: Sent to different queues based on customer type.
+
+We will use the OrderValidationService, OrderEnrichmentService, FulfillmentDataProcessor, and CustomerService that we defined earlier.
+
+**Order Model:**
+
+```java
+package com.example.ecommerce.model;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+public class Order {
+    private String orderId;
+    private String customerId;
+    private String customerName;
+    private String shippingAddress;
+    private Double shippingCost;
+    private List<OrderItem> items;
+    private List<String> notes;
+
+    public Order() {
+        this.orderId = UUID.randomUUID().toString(); // Generate ID on creation
+        this.items = new ArrayList<>();
+        this.notes = new ArrayList<>();
+    }
+
+    // Getters and Setters (omitted for brevity, assume standard Lombok or IDE generation)
+    public String getOrderId() { return orderId; }
+    public void setOrderId(String orderId) { this.orderId = orderId; }
+    public String getCustomerId() { return customerId; }
+    public void setCustomerId(String customerId) { this.customerId = customerId; }
+    public String getCustomerName() { return customerName; }
+    public void setCustomerName(String customerName) { this.customerName = customerName; }
+    public String getShippingAddress() { return shippingAddress; }
+    public void setShippingAddress(String shippingAddress) { this.shippingAddress = shippingAddress; }
+    public Double getShippingCost() { return shippingCost; }
+    public void setShippingCost(Double shippingCost) { this.shippingCost = shippingCost; }
+    public List<OrderItem> getItems() { return items; }
+    public void setItems(List<OrderItem> items) { this.items = items; }
+    public List<String> getNotes() { return notes; }
+    public void setNotes(List<String> notes) { this.notes = notes; }
+
+    public void addNote(String note) {
+        if (this.notes == null) {
+            this.notes = new ArrayList<>();
+        }
+        this.notes.add(note);
+    }
+
+    @Override
+    public String toString() {
+        return "Order{" +
+               "orderId='" + orderId + '\'' +
+               ", customerId='" + customerId + '\'' +
+               ", customerName='" + customerName + '\'' +
+               ", shippingAddress='" + shippingAddress + '\'' +
+               ", shippingCost=" + shippingCost +
+               ", items=" + items +
+               ", notes=" + notes +
+               '}';
+    }
+}
+```
+
+```java
+package com.example.ecommerce.model;
+
+public class OrderItem {
+    private String productSku;
+    private int quantity;
+    private double price;
+
+    public OrderItem() {}
+
+    public OrderItem(String productSku, int quantity, double price) {
+        this.productSku = productSku;
+        this.quantity = quantity;
+        this.price = price;
+    }
+
+    // Getters and Setters (omitted for brevity)
+    public String getProductSku() { return productSku; }
+    public void setProductSku(String productSku) { this.productSku = productSku; }
+    public int getQuantity() { return quantity; }
+    public void setQuantity(int quantity) { this.quantity = quantity; }
+    public double getPrice() { return price; }
+    public void setPrice(double price) { this.price = price; }
+
+    @Override
+    public String toString() {
+        return "OrderItem{" +
+               "productSku='" + productSku + '\'' +
+               ", quantity=" + quantity +
+               ", price=" + price +
+               '}';
+    }
+}
+```
+
+**Main Order Processing Route:**
+
+```java
+package com.example.ecommerce.route;
+
+import com.example.ecommerce.model.Order;
+import com.example.ecommerce.processor.FulfillmentDataProcessor;
+import com.example.ecommerce.service.CustomerService;
+import com.example.ecommerce.service.OrderEnrichmentService;
+import com.example.ecommerce.service.OrderValidationService;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.model.dataformat.JsonDataFormat;
+import org.apache.camel.model.dataformat.JsonLibrary;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+@Component
+public class MainOrderProcessingRoute extends RouteBuilder {
+
+    private final OrderValidationService orderValidationService;
+    private final OrderEnrichmentService orderEnrichmentService;
+    private final FulfillmentDataProcessor fulfillmentDataProcessor;
+    private final CustomerService customerService;
+
+    // Use constructor injection for all Spring beans needed in the route
+    @Autowired
+    public MainOrderProcessingRoute(
+            OrderValidationService orderValidationService,
+            OrderEnrichmentService orderEnrichmentService,
+            FulfillmentDataProcessor fulfillmentDataProcessor,
+            CustomerService customerService) {
+        this.orderValidationService = orderValidationService;
+        this.orderEnrichmentService = orderEnrichmentService;
+        this.fulfillmentDataProcessor = fulfillmentDataProcessor;
+        this.customerService = customerService;
+    }
+
+    @Override
+    public void configure() {
+        // Data format for JSON (Module 6 will cover data formats in more detail)
+        JsonDataFormat orderJsonFormat = new JsonDataFormat(JsonLibrary.Jackson);
+        orderJsonFormat.setUnmarshalType(Order.class);
+
+        // Error handling for the route
+        errorHandler(deadLetterChannel("log:orderProcessingErrors")
+            .useOriginalMessage()
+            .maximumRedeliveries(3)
+            .redeliveryDelay(2000)); // Retry after 2 seconds
+
+        from("file:src/data/inbox?noop=true") // Consume files from inbox (from Module 3)
+            .routeId("eCommerceOrderIngestion")
+            .log("Received new order file: ${file:name}")
+            .unmarshal(orderJsonFormat) // Convert JSON file content to Order object
+            .log("Unmarshalled order: ${body.orderId}")
+
+            // 1. Order Validation using bean EIP
+            .bean(orderValidationService, "validateOrder") // Referencing injected bean instance
+            .log("Order ${body.orderId} validated successfully.")
+
+            // 2. Order Enrichment using bean EIP with header
+            .setHeader("EnrichmentType", constant("shipping"))
+            .bean(orderEnrichmentService, "enrichOrderDetails")
+            .log("Order ${body.orderId} enriched with shipping details.")
+
+            // 3. Conditional Routing based on CustomerService (direct injection in predicate)
+            .choice()
+                .when(exchange -> {
+                    Order order = exchange.getIn().getBody(Order.class);
+                    return customerService.isPremiumCustomer(order.getCustomerId());
+                })
+                    .log("Order ${body.orderId} for PREMIUM customer. Routing to premium queue.")
+                    .to("jms:queue:premiumOrders") // JMS component from Module 3
+                .otherwise()
+                    .log("Order ${body.orderId} for STANDARD customer. Routing to standard queue.")
+                    .to("jms:queue:standardOrders")
+            .end()
+
+            // 4. Transformation for Fulfillment System using process EIP
+            .process(fulfillmentDataProcessor) // Referencing injected Processor bean instance
+            .log("Order ${headers.fulfillmentId} transformed for external fulfillment.")
+            .to("mock:fulfillmentSystem"); // Simulate sending to an external system
+    }
+}
+```
+
+This comprehensive route demonstrates how all three methods of integrating Spring beans and services (using bean EIP, process EIP, and direct injection into RouteBuilder predicates) can be combined to build a robust and modular enterprise integration flow within the E-commerce Order Processing system. Each step leverages a dedicated Spring service, making the route clear, focused on orchestration, and highly maintainable.
+
+To test this, you would create a src/data/inbox directory and place JSON files representing orders, such as:
+
+**src/data/inbox/order1.json:**
+
+```json
+{
+  "customerId": "CUST001",
+  "items": [
+    { "productSku": "PROD001", "quantity": 2, "price": 10.00 },
+    { "productSku": "PROD002", "quantity": 1, "price": 25.00 }
+  ]
+}
+```
+
+**src/data/inbox/premium_order.json:**
+
+```json
+{
+  "customerId": "PREM_CUST005",
+  "items": [
+    { "productSku": "PROD003", "quantity": 1, "price": 50.00 }
+  ]
+}
+```
+
+When your Spring Boot application starts, Camel will automatically pick up these files, unmarshal them, and pass them through the defined services, logging each step of the process.
 
 #### <a name="chapter5part4"></a>Chapter 5 - Part 4: Monitoring Camel Routes with Spring Boot Actuator and JMX
 
+In the world of enterprise integration, building robust and efficient integration solutions is only half the battle. The other crucial half involves ensuring these systems operate smoothly, perform as expected, and can be diagnosed quickly when issues arise. Monitoring provides the necessary visibility into the health, performance, and operational state of your integration routes and applications. Without effective monitoring, unexpected failures can go unnoticed, performance bottlenecks can degrade user experience, and debugging becomes a significantly more challenging and time-consuming process. This lesson delves into how Spring Boot's powerful Actuator framework and the standard Java Management Extensions (JMX) can be leveraged to gain deep insights into the runtime behavior of your Apache Camel routes, offering a comprehensive toolkit for operational oversight of your integration applications.
+
 #### <a name="chapter5part4.1"></a>Chapter 5 - Part 4.1: Spring Boot Actuator for Camel Route Monitoring
+
+Spring Boot Actuator provides production-ready features to monitor and manage your application. It exposes a variety of endpoints that allow you to inspect internal application state, health, metrics, environment properties, and more. When you combine Spring Boot with Apache Camel, the Camel Spring Boot starter integrates seamlessly with Actuator, exposing Camel-specific information through dedicated Actuator endpoints. This allows you to gain insights into your Camel Contexts, routes, and components without writing any custom monitoring code.
+
+**Understanding Spring Boot Actuator**
+
+Actuator exposes operational information about the running application over HTTP or JMX. Key features include:
+
+- **Health Endpoints**: Provides basic application health information (/actuator/health).
+- **Info Endpoints**: Displays arbitrary application information (/actuator/info).
+- **Metrics Endpoints**: Publishes various metrics about the JVM, application, and custom metrics (/actuator/metrics).
+- **Environment Endpoints**: Shows the environment properties (/actuator/env).
+- **Beans Endpoints**: Lists all Spring beans in the application context (/actuator/beans).
+
+For Camel, Actuator extends these capabilities to expose details specific to your integration landscape.
+
+**Enabling Camel Actuator Endpoints**
+
+To enable Spring Boot Actuator and its Camel-specific extensions, you need to add the spring-boot-starter-actuator and camel-spring-boot-starter-actuator dependencies to your pom.xml.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version> <!-- Use a recent Spring Boot version -->
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>camel-ecommerce-monitoring</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>camel-ecommerce-monitoring</name>
+    <description>Monitoring Camel Routes with Actuator and JMX for E-commerce</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <camel.version>4.4.0</camel.version> <!-- Use a recent Camel version -->
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-spring-boot-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-timer-starter</artifactId> <!-- Example component -->
+            <version>${camel.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-log-starter</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+
+        <!-- Spring Boot Actuator for monitoring -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- Camel Actuator integration -->
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-spring-boot-starter-actuator</artifactId>
+            <version>${camel.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+Next, you need to configure application.properties (or application.yml) to expose the desired Actuator endpoints. By default, only health and info are exposed. To view Camel-specific endpoints, you need to explicitly include them.
+
+```
+# application.properties
+# Expose all Actuator web endpoints
+management.endpoints.web.exposure.include=*
+
+# Explicitly enable Camel-specific Actuator endpoint (often included by default with exposure.*)
+management.endpoint.camel.enabled=true
+
+# Enable JMX for Actuator (optional, but good for completeness)
+management.endpoints.jmx.exposure.include=*
+
+# Example: disable Actuator security for local development (NOT recommended for production)
+management.endpoints.web.exposure.exclude=heapdump,threaddump
+# For simplicity in learning, we include everything. In production, be selective.
+```
+
+**Exploring Camel-specific Actuator Endpoints**
+
+Once configured, you can access various Camel-specific endpoints via HTTP. Assuming your application runs on port 8080:
+
+- **/actuator/camelroutes**: Provides a list of all Camel routes, their IDs, states (started, stopped), and basic statistics.
+- **/actuator/camelcontexts**: Offers details about the Camel Contexts running within the application, including their status and uptime.
+- **/actuator/camelcomponents**: Lists all configured Camel components.
+- **/actuator/camelbeans**: Exposes various Camel MBeans (Managed Beans) that can also be accessed via JMX. This is particularly useful for debugging and introspection.
+
+Let's illustrate with our "E-commerce Order Processing" case study. Imagine we have a route that ingests orders from a file system and another that processes payments via a message queue.
+
+```java
+// src/main/java/com/example/camel_ecommerce_monitoring/EcommerceRoutes.java
+package com.example.camel_ecommerce_monitoring;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class EcommerceRoutes extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Route 1: Order Ingestion from a file
+        from("file:src/data/inbox?noop=true") // noop=true means do not delete/move files after processing
+            .routeId("orderIngestionRoute")
+            .log("Processing new order file: ${file:name}")
+            .unmarshal().csv() // Assuming order data is in CSV format
+            .split(body()) // Split the CSV into individual order records
+                .routeId("splitOrderRecords") // Inner route for splitting
+                .filter(simple("${body[0]} != 'Header'")) // Skip header row
+                .process(exchange -> {
+                    // Simulate some processing for each order record
+                    String orderId = exchange.getIn().getBody(String.class).split(",")[0];
+                    System.out.println("Processing order record: " + orderId);
+                    // Add to a property for later use
+                    exchange.setProperty("orderId", orderId);
+                })
+                .log("Successfully processed order record with ID: ${exchangeProperty.orderId}")
+            .end(); // End of split
+
+        // Route 2: Payment Processing via a simulated queue (using direct for simplicity)
+        from("timer:paymentProcessor?period=5s")
+            .routeId("paymentProcessingRoute")
+            .setBody(simple("Simulated payment transaction for order-${random(1000)}"))
+            .log("Sending payment transaction: ${body}")
+            .to("log:com.example.payment.success?level=INFO");
+
+        // Route 3: Error Simulation Route
+        from("timer:errorRoute?period=10s&fixedRate=true")
+            .routeId("errorSimulationRoute")
+            .process(exchange -> {
+                int randomNumber = (int) (Math.random() * 10);
+                if (randomNumber < 3) { // Simulate an error 30% of the time
+                    throw new RuntimeException("Simulated error during processing for random number: " + randomNumber);
+                }
+                exchange.getIn().setBody("Successful processing for random number: " + randomNumber);
+            })
+            .log("Error Simulation Route: ${body}")
+            .onException(RuntimeException.class) // Error handling for this route
+                .handled(true)
+                .log("ERROR: An error occurred in errorSimulationRoute: ${exception.message}")
+                .to("log:com.example.error?level=ERROR")
+            .end();
+    }
+}
+```
+
+After running this Spring Boot application, you can open your web browser or use curl to query the Actuator endpoints:
+
+- **http://localhost:8080/actuator/camelroutes**: You would see JSON output listing orderIngestionRoute, paymentProcessingRoute, splitOrderRecords, and errorSimulationRoute along with their states (started) and basic statistics like ExchangesCompleted, FailuresHandled, and MinProcessingTime. This provides a quick overview of which order processing or payment processing routes are active and their immediate performance metrics.
+- **http://localhost:8080/actuator/camelcontexts**: This would show details about the main camel-1 context (or whatever the default context is named), including its status, uptime, and the number of routes it contains.
+
+**Real-world Example**: Imagine your "E-commerce Order Processing" system has dozens of routes handling various aspects: orderIngestionRoute, validateOrderRoute, enrichOrderRoute, processPaymentRoute, sendNotificationRoute, archiveOrderRoute, etc. Using /actuator/camelroutes, an operations team can quickly check the status of all these routes. If processPaymentRoute shows a high FailuresHandled count, it immediately signals a potential issue with the payment gateway integration. Similarly, a stalled orderIngestionRoute (e.g., ExchangesCompleted not increasing) could indicate a problem with the file system consumer.
+
+**Hypothetical Scenario**: Consider a manufacturing plant using Camel to integrate various machinery data streams. A route sensorDataIngestionRoute collects data from temperature sensors, and qualityControlRoute analyzes this data. An operations engineer could use /actuator/camelroutes to verify that both routes are STARTED and observe their ExchangesCompleted count to ensure data is flowing. If qualityControlRoute is STOPPED or its ExchangesCompleted count is stagnant, it points to an immediate problem in the quality monitoring system.
 
 #### <a name="chapter5part4.2"></a>Chapter 5 - Part 4.2: JMX for Real-time Camel Management and Monitoring
 
+Java Management Extensions (JMX) provide a standard way to manage and monitor Java applications, services, and devices. Apache Camel fully leverages JMX to expose a rich set of runtime MBeans (Managed Beans) that offer detailed insights into the Camel Context, routes, endpoints, and processors. Unlike Actuator's REST endpoints which provide snapshots, JMX allows for real-time, interactive monitoring and even management operations (like starting/stopping routes).
+
+**What is JMX?**
+
+JMX defines an architecture for creating distributed management solutions. Key components include:
+
+- **MBeanServer**: The core JMX agent that registers and exposes MBeans.
+- **MBeans**: Java objects that represent resources to be managed. Camel exposes MBeans for its contexts, routes, endpoints, components, and error handlers.
+- **Connectors**: Allow remote clients to connect to the MBeanServer (e.g., RMI).
+- **Adapters**: Adapt the JMX protocol to other protocols (e.g., HTTP for web-based consoles).
+
+**Camel MBeans via JMX**
+
+When Camel runs in a Spring Boot application, JMX is typically enabled by default. If not, you can explicitly enable it in application.properties:
+
+```
+# application.properties
+spring.jmx.enabled=true
+camel.springboot.jmx-enabled=true
+```
+
+Camel registers various MBeans under the org.apache.camel domain in the MBeanServer. These MBeans expose a wealth of information:
+
+- org.apache.camel:context=*,type=routes,name=*: MBeans representing individual Camel routes. These are incredibly useful, providing attributes like:
+  - State: Started, Stopped, Suspended.
+  - ExchangesCompleted: Total number of messages processed successfully.
+  - ExchangesFailed: Total number of messages that failed.
+  - Redeliveries: Number of message redelivery attempts.
+  - AverageProcessingTime: Average time taken to process a message through the route.
+  - MinProcessingTime, MaxProcessingTime: Minimum and maximum processing times.
+  - LastProcessingTime: Time taken for the last processed exchange.
+  - TotalProcessingTime: Cumulative processing time.
+  - DeltaProcessingTime: Processing time since the last reset.
+  - LastExchangeFailureTimestamp, LastExchangeCompletionTimestamp: Timestamps of last event.
+  - Operations like start(), stop(), resetStatistics(), suspend(), resume().
+- org.apache.camel:context=*,type=context,name=*: MBeans for the entire CamelContext, providing overall application health and configuration details. Attributes include:
+  - State: Status of the context.
+  - Uptime: How long the context has been running.
+  - ManagementName: The name of the context.
+  - TotalRoutes: Number of routes in the context.
+  - TotalEndpoints: Number of endpoints.
+  - Operations like stop(), start().
+- org.apache.camel:context=*,type=processors,name=*: MBeans for individual processors within routes, offering granular statistics.
+- org.apache.camel:context=*,type=endpoints,name=*: MBeans for each endpoint used in the Camel Context.
+
+**Connecting with JConsole or VisualVM**
+
+To interact with JMX MBeans, you can use standard JDK tools like JConsole or VisualVM. These tools connect to a running JVM (either locally or remotely) and provide a graphical interface to browse, inspect, and invoke operations on MBeans.
+
+**Steps to use JConsole:**
+
+- Ensure your Spring Boot application with Camel is running.
+- Open a terminal and type jconsole.
+- In the JConsole dialog, select the running Spring Boot application process (e.g., com.example.camel_ecommerce_monitoring.Application).
+- Click "Connect".
+- Navigate to the "MBeans" tab.
+- Expand the org.apache.camel domain. You will see sub-domains for context, routes, processors, endpoints, etc.
+- Click on routes and then select a specific route, for instance, orderIngestionRoute.
+- In the right pane, you'll see "Attributes" showing real-time statistics (e.g., ExchangesCompleted, AverageProcessingTime, FailuresHandled).
+- You can also go to the "Operations" tab to invoke methods like resetStatistics() or stop()/start() on a route.
+
+**Illustrating with E-commerce Order Processing:**
+
+Consider our EcommerceRoutes application again.
+
+- If you're monitoring the orderIngestionRoute, using JConsole, you can select the MBean for orderIngestionRoute. You'd be able to see the ExchangesCompleted count increasing as new order files are processed. If an invalid file is placed causing an error (e.g., malformed CSV not handled by the unmarshal), you would see ExchangesFailed increment.
+- For the paymentProcessingRoute, you could monitor its AverageProcessingTime to ensure that simulated payments are processed within acceptable latency. If this value spikes, it might indicate a bottleneck in the payment gateway integration.
+- The errorSimulationRoute is particularly useful here. When it throws a RuntimeException, JMX will show the ExchangesFailed count increasing for this route, while ExchangesCompleted still shows increments for successful runs, giving a clear picture of its error rate.
+
+**Real-world Example**: An integration architect is troubleshooting slow order processing in an e-commerce system. They suspect a particular third-party service call within the enrichOrderRoute is the bottleneck. Using JMX and JConsole, they connect to the running application and navigate to the enrichOrderRoute MBean. By observing the AverageProcessingTime attribute in real-time, they confirm that this specific route is indeed taking significantly longer than others. They might then use the resetStatistics() operation to clear the metrics and monitor a new batch of orders to see if recent changes improved performance.
+
+**Hypothetical Scenario**: A financial institution uses Camel to process high volumes of stock trade requests. A critical route, tradeConfirmationRoute, sends confirmations to customers. During a market surge, the operations team notices a backlog. They use VisualVM (which includes JMX capabilities) to connect to the trading application. By inspecting the tradeConfirmationRoute MBean, they observe a rapid increase in TotalProcessingTime and MaxProcessingTime, along with a growing number of ExchangesInflight. This real-time data allows them to confirm the route is overwhelmed and decide to scale up resources or temporarily suspend less critical routes using JMX operations.
+
 #### <a name="chapter5part4.3"></a>Chapter 5 - Part 4.3: Practical Examples and Demonstrations
+
+Let's put theory into practice with our E-commerce Order Processing application.
+
+**Setup and Route Definition**
+
+First, ensure you have the pom.xml dependencies and application.properties configuration as shown above.
+
+Then, create the EcommerceRoutes class as previously defined:
+
+```java
+// src/main/java/com/example/camel_ecommerce_monitoring/EcommerceRoutes.java
+package com.example.camel_ecommerce_monitoring;
+
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class EcommerceRoutes extends RouteBuilder {
+
+    @Override
+    public void configure() throws Exception {
+        // Configure error handling for the entire Camel Context
+        // This will catch exceptions not handled by onException within a specific route
+        errorHandler(deadLetterChannel("log:deadLetterLog?level=ERROR")
+            .useOriginalMessage()
+            .maximumRedeliveries(3)
+            .redeliveryDelay(2000)); // Try 3 times, with 2-second delay
+
+        // Route 1: Order Ingestion from a file
+        from("file:src/data/inbox?noop=true") // noop=true means do not delete/move files after processing
+            .routeId("orderIngestionRoute")
+            .log("Processing new order file: ${file:name}")
+            // Simulate an error if filename contains 'bad'
+            .choice()
+                .when(simple("${file:name} contains 'bad'"))
+                    .throwException(new IllegalArgumentException("Simulated error for bad file: ${file:name}"))
+                .otherwise()
+                    .unmarshal().csv() // Assuming order data is in CSV format
+                    .split(body()) // Split the CSV into individual order records
+                        .routeId("splitOrderRecords") // Inner route for splitting
+                        .filter(simple("${body[0]} != 'Header'")) // Skip header row
+                        .process(exchange -> {
+                            String orderId = exchange.getIn().getBody(String.class).split(",")[0];
+                            System.out.println("Processing order record: " + orderId);
+                            exchange.setProperty("orderId", orderId);
+                        })
+                        .log("Successfully processed order record with ID: ${exchangeProperty.orderId}")
+                    .end() // End of split
+            .end(); // End of choice
+
+        // Route 2: Payment Processing via a simulated queue (using direct for simplicity)
+        from("timer:paymentProcessor?period=5s")
+            .routeId("paymentProcessingRoute")
+            .setBody(simple("Simulated payment transaction for order-${random(1000)}"))
+            .log("Sending payment transaction: ${body}")
+            .to("log:com.example.payment.success?level=INFO");
+
+        // Route 3: Error Simulation Route with specific error handling
+        from("timer:errorRoute?period=10s&fixedRate=true")
+            .routeId("errorSimulationRoute")
+            .process(exchange -> {
+                int randomNumber = (int) (Math.random() * 10);
+                if (randomNumber < 3) { // Simulate an error 30% of the time
+                    throw new RuntimeException("Simulated error during processing for random number: " + randomNumber);
+                }
+                exchange.getIn().setBody("Successful processing for random number: " + randomNumber);
+            })
+            .log("Error Simulation Route: ${body}")
+            .onException(RuntimeException.class) // Error handling for this route specifically
+                .handled(true) // We handled it, so it won't go to dead letter channel
+                .log("ERROR HANDLED LOCALLY: An error occurred in errorSimulationRoute: ${exception.message}")
+                .to("log:com.example.error?level=ERROR")
+            .end();
+    }
+}
+```
+
+Create a src/data/inbox directory. Inside src/data/inbox, create order1.csv:
+
+```
+id,product,quantity
+1,Laptop,1
+2,Mouse,2
+```
+
+And order2.csv:
+
+```
+id,product,quantity
+3,Keyboard,1
+4,Monitor,1
+```
+
+And bad_order.csv:
+
+```
+id,product,quantity
+5,Chair,1
+6,Desk,1
+```
+
+The bad_order.csv is designed to trigger the IllegalArgumentException in the orderIngestionRoute.
+
+**Running the Application and Accessing Actuator**
+
+- Run the Spring Boot application (e.g., from your IDE or mvn spring-boot:run).
+- Open your browser or use curl:
+  - http://localhost:8080/actuator/camelroutes: Observe the details of orderIngestionRoute, paymentProcessingRoute, splitOrderRecords, and errorSimulationRoute. Pay attention to ExchangesCompleted and FailuresHandled.
+  - http://localhost:8080/actuator/camelcontexts: See the overall Camel context status.
+  - http://localhost:8080/actuator/health: Check the application health.
+ 
+You will see ExchangesCompleted increasing for paymentProcessingRoute and errorSimulationRoute (if successful), and FailuresHandled increasing for errorSimulationRoute when it throws an exception. For orderIngestionRoute, place order1.csv and order2.csv into src/data/inbox. You'll see logs indicating processing. Refresh the Actuator endpoint to see ExchangesCompleted for orderIngestionRoute and splitOrderRecords increase. Now, place bad_order.csv into src/data/inbox. The logs will show the IllegalArgumentException. Check camelroutes Actuator endpoint; the FailuresHandled for orderIngestionRoute will increment.
+
+**Using JConsole for Real-time Monitoring and Management**
+
+- While the application is running, open JConsole.
+- Connect to your running Spring Boot application process.
+- Go to the "MBeans" tab.
+- Navigate to org.apache.camel -> localhost -> context -> camel-1 -> routes.
+- Select orderIngestionRoute
+  - **Attributes**: Observe ExchangesCompleted, ExchangesFailed, AverageProcessingTime. Place new CSV files in src/data/inbox and watch these values update in real-time. Notice how FailuresHandled increments when bad_order.csv is processed.
+  - **Operations**: Try invoking resetStatistics() to clear all route metrics. Then place more files and observe the fresh statistics. You can also stop() and start() the route. Stopping orderIngestionRoute will prevent new files from being processed, and starting it will resume.
+- Select errorSimulationRoute.
+  - **Attributes**: Watch ExchangesCompleted and FailuresHandled update every 10 seconds. You'll see failures regularly as per the simulated error logic.
+  - **Operations**: Try suspend() this route to temporarily halt the error simulation, then resume() it.
+ 
+This hands-on demonstration highlights how Actuator provides quick, aggregated data via HTTP, while JMX (through JConsole) offers granular, real-time metrics and dynamic management capabilities for individual components and routes, critical for deep troubleshooting and operational control in a live e-commerce system.
 
 #### <a name="chapter5part5"></a>Chapter 5 - Part 5: Distributed Tracing with OpenTelemetry for observing order flows
 
+In complex enterprise integration scenarios, especially with microservices architectures like the one we're building for our E-commerce Order Processing system, a single user request or business process often traverses multiple services, queues, databases, and Camel routes. Understanding the end-to-end flow of an order, identifying bottlenecks, or debugging issues across these distributed components becomes incredibly challenging with traditional logging and monitoring tools. This is where distributed tracing comes into play. Distributed tracing provides a way to track the journey of a request as it flows through various services, offering a unified, end-to-end view of operations. OpenTelemetry, a vendor-neutral observability framework, has emerged as the industry standard for instrumenting, generating, and exporting telemetry data—including traces—making it an indispensable tool for gaining deep insights into the performance and behavior of our integrated systems. By integrating OpenTelemetry into our Apache Camel and Spring Boot applications, we can effectively observe and troubleshoot the intricate order processing workflows, ensuring system reliability and efficiency.
+
 #### <a name="chapter5part5.1"></a>Chapter 5 - Part 5.1: Understanding Distributed Tracing Fundamentals
+
+Distributed tracing is a technique used to monitor and profile applications, especially those built using a microservices architecture. It helps visualize the entire journey of a request or transaction as it propagates through various services and components. This visibility is crucial for diagnosing latency issues, understanding service dependencies, and pinpointing failures within a complex system.
+
+**Traces and Spans: The Building Blocks**
+
+At the core of distributed tracing are two fundamental concepts: Traces and Spans.
+
+- **Trace**: A trace represents a single, end-to-end operation or request that flows through a distributed system. Think of it as the complete story of an order being placed, processed, and fulfilled. In our E-commerce Order Processing system, a trace might start when a customer places an order via a front-end application, extend through an API Gateway, an Order Service (our Camel Spring Boot application), a Payment Service, and finally an Inventory Service. All the individual operations involved in fulfilling that order are part of the same trace.
+
+  - **Real-world Example**: A customer clicking "Place Order" on an e-commerce website initiates a trace. This trace encompasses the web browser's request, the API gateway receiving it, the order processing microservice (our Camel app) handling validation and persistence, the payment gateway integration, and potentially a notification service dispatching an email. The entire sequence, from click to confirmation, is one trace.
+  - **Hypothetical Scenario**: Imagine a smart city traffic management system. When a sensor detects heavy traffic, a "traffic optimization trace" might begin. This trace could involve a central analysis service, a signal control service adjusting lights, and a public transport service updating schedules. The trace shows the cascading effects of a single event across multiple city systems.
+
+- **Span**: A span is a single, atomic operation within a trace. Each span represents a distinct unit of work performed by a service, such as receiving an HTTP request, querying a database, sending a message to a queue, or executing a specific method. Spans have a start time, an end time, and metadata (attributes) describing the operation. Spans are typically nested, forming a parent-child relationship, which visualizes the causal relationship between operations.
+  - **Real-world Example (Order Processing)**: Within the "Place Order" trace mentioned above, individual spans would include:
+    - "Receive Order Request" (by API Gateway)
+    - "Process Order" (by Order Service - our Camel application)
+    - "Validate Order Data" (a sub-operation within "Process Order")
+    - "Send Order to JMS Queue" (by Order Service)
+    - "Process Payment" (by Payment Service)
+    - "Update Inventory" (by Inventory Service) Each of these is a span, with "Process Order" being a child of "Receive Order Request", and "Validate Order Data" being a child of "Process Order".
+  - **Attributes**: Spans can carry attributes (key-value pairs) that provide contextual information. For an "Process Order" span, attributes could include order.id, customer.id, order.total_amount, order.status. These attributes are invaluable for filtering and searching traces later.
+ 
+**Context Propagation: Linking Spans Across Services**
+
+For a trace to be coherent across multiple services, the unique identifiers for the trace and the current span must be passed along with the request as it moves from one service to another. This mechanism is called context propagation.
+
+When Service A calls Service B, Service A includes a special header (or other mechanism) containing the current trace ID and its own span ID. Service B, upon receiving the request, extracts this information. It then starts a new span that is a child of Service A's span and uses the same trace ID. This ensures that all operations related to the initial request are linked together within a single trace.
+
+- **Example (E-commerce)**:
+  - A user's browser sends an HTTP request to an OrderService.
+  - The OrderService (our Spring Boot/Camel app) receives the request, extracts the trace context, and starts a new span, say "ReceiveOrderApi".
+  - Within the OrderService, a Camel route processes the order. This route might call an external InventoryService via an http component.
+  - Before making the HTTP call to InventoryService, the OrderService injects the current trace context (trace ID, parent span ID) into the HTTP headers of the outgoing request.
+  - The InventoryService receives the HTTP request, extracts the trace context from the headers, and starts a new span, "UpdateInventory", as a child of the OrderService's "ReceiveOrderApi" span, all under the same trace ID.
+
+Without proper context propagation, spans from different services would appear as unrelated, isolated operations, defeating the purpose of distributed tracing.
 
 #### <a name="chapter5part5.2"></a>Chapter 5 - Part 5.2: Introduction to OpenTelemetry
 
+OpenTelemetry (OTel) is a set of open-source APIs, SDKs, and tools designed to standardize the collection and export of telemetry data—traces, metrics, and logs—from your applications. It provides a vendor-neutral approach to instrumenting your code, meaning you write your instrumentation once, and you can then choose to export your telemetry data to any compatible backend (like Jaeger, Zipkin, New Relic, Datadog, etc.) without changing your application code.
+
+**Goals and Benefits of OpenTelemetry**
+
+- **Vendor Neutrality**: This is OTel's biggest advantage. It frees developers from vendor lock-in for observability. You can swap out your observability backend without re-instrumenting your code.
+- **Standardization**: It provides a consistent way to generate telemetry data across different languages and frameworks, making it easier to correlate data across diverse systems.
+- **Rich Context**: OTel allows for the capture of rich context via attributes, making traces and metrics more meaningful for debugging and analysis.
+- **Active Community and Broad Adoption**: OTel is a Cloud Native Computing Foundation (CNCF) project with significant industry backing, ensuring its longevity and continued development.
+
+**Components of OpenTelemetry**
+
+OpenTelemetry consists of several key components:
+
+- **API (Application Programming Interface)**: Defines the interfaces for instrumentation, such as how to create spans, add attributes, or propagate context. This is what developers interact with directly when manually instrumenting code.
+- **SDK (Software Development Kit)**: Implements the API. The SDK processes the telemetry data generated by the API, applies sampling, batches data, and then exports it. Developers configure the SDK (e.g., choose an exporter, set sampling rules).
+- **OpenTelemetry Collector**: An optional but highly recommended component. The Collector is a standalone proxy that can receive, process, and export telemetry data from multiple services. It acts as a central hub, reducing the load on individual applications and providing a single point for configuration and filtering. It can transform data, batch it, and send it to multiple backends.
+- **Exporters**: Components within the SDK (or Collector) responsible for sending telemetry data to a specific backend system (e.g., OTLP, Jaeger, Zipkin, Prometheus). OTLP (OpenTelemetry Protocol) is the native protocol for OpenTelemetry and the recommended way to export data.
+
 #### <a name="chapter5part5.3"></a>Chapter 5 - Part 5.3: Integrating OpenTelemetry with Spring Boot and Apache Camel
+
+Integrating OpenTelemetry into your Spring Boot and Apache Camel application involves adding the necessary dependencies and configuring the OpenTelemetry SDK. There are two primary approaches for instrumentation: automatic instrumentation using the Java Agent and manual instrumentation within your code.
+
+**Automatic Instrumentation with OpenTelemetry Java Agent**
+
+The OpenTelemetry Java Agent is a powerful tool that allows you to instrument many popular libraries and frameworks automatically without changing your application's source code. This is often the quickest way to get started and gain basic tracing visibility for common operations like HTTP requests, database calls, and messaging.
+
+The agent works by injecting bytecode into your application at startup, adding instrumentation for supported libraries (e.g., Spring WebFlux, Apache HttpClient, JDBC, JMS, Kafka, and crucially, Apache Camel).
+
+To use the Java Agent:
+
+- **Download the Agent**: Download the opentelemetry-javaagent.jar from the official OpenTelemetry Java Agent GitHub releases page.
+
+- **Run with Agent**: Start your Spring Boot application with the -javaagent argument, pointing to the downloaded JAR file.
+
+```java
+java -javaagent:/path/to/opentelemetry-javaagent.jar \
+     -jar your-camel-app.jar
+```
+
+- **Configure the Agent**: The agent can be configured using environment variables, system properties, or a configuration file. Key configurations include:
+  - **OTEL_SERVICE_NAME**: The name of your service (e.g., order-processing-service). This is crucial for identifying traces from your application.
+  - **OTEL_TRACES_EXPORTER**: The exporter to use (e.g., otlp, jaeger, zipkin). otlp is recommended.
+  - **OTEL_EXPORTER_OTLP_ENDPOINT**: The URL of your OTLP receiver (often an OpenTelemetry Collector). Default is http://localhost:4317.
+  - **OTEL_LOGS_EXPORTER / OTEL_METRICS_EXPORTER**: Similarly for logs and metrics, though our focus here is on traces.
+ 
+**Example application.properties (or environment variables):**
+
+```
+# application.properties (these are system properties/env variables, not directly in app.properties for agent)
+# They are typically passed as JVM arguments or environment variables when running the app.
+# Example JVM arguments:
+# -Dotel.service.name=order-processing-service
+# -Dotel.traces.exporter=otlp
+# -Dotel.exporter.otlp.endpoint=http://localhost:4317
+# -Dotel.resource.attributes=deployment.environment=development,host.name=my-server
+```
+
+When using the agent, it will automatically instrument common components within Spring Boot and Apache Camel. For example, HTTP requests handled by Spring controllers will generate spans, and calls made via camel-http or messages sent/received by camel-jms will also be traced, ensuring context propagation.
+
+**Manual Instrumentation for Apache Camel Routes**
+
+While the Java Agent provides a good baseline, you'll often need to add custom spans or attributes within your Camel routes to capture business-specific logic or provide more granular details for operations not automatically instrumented. This is where manual instrumentation comes in.
+
+To manually instrument, you'll need the OpenTelemetry API and SDK dependencies:
+
+```xml
+<!-- In your pom.xml -->
+<dependencies>
+    <!-- OpenTelemetry API -->
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-api</artifactId>
+        <version>1.35.0</version> <!-- Use a recent stable version -->
+    </dependency>
+    <!-- OpenTelemetry SDK dependencies for tracing -->
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-sdk</artifactId>
+        <version>1.35.0</version>
+    </dependency>
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-sdk-trace</artifactId>
+        <version>1.35.0</version>
+    </dependency>
+    <!-- OpenTelemetry OTLP Exporter (recommended) -->
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-exporter-otlp</artifactId>
+        <version>1.35.0</version>
+    </dependency>
+    <!-- Optional: For JAXB/XML related issues if encountered with OTLP -->
+    <dependency>
+        <groupId>jakarta.xml.bind</groupId>
+        <artifactId>jakarta.xml.bind-api</artifactId>
+        <version>4.0.0</version>
+    </dependency>
+    <dependency>
+        <groupId>org.glassfish.jaxb</groupId>
+        <artifactId>jaxb-runtime</artifactId>
+        <version>4.0.4</version>
+    </dependency>
+
+    <!-- Spring Boot and Camel dependencies (as usual) -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.camel.springboot</groupId>
+        <artifactId>camel-spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.camel</groupId>
+        <artifactId>camel-jackson</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.camel</groupId>
+        <artifactId>camel-http</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.camel</groupId>
+        <artifactId>camel-jms</artifactId>
+    </dependency>
+    <!-- ... other dependencies ... -->
+</dependencies>
+```
+
+**Configuring the OpenTelemetry SDK Programmatically**
+
+When using manual instrumentation or if the agent isn't sufficient, you need to configure the OTel SDK programmatically within your Spring Boot application. This typically involves defining Spring @Beans for the OpenTelemetry instance and its components.
+
+```java
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.resources.Resource;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
+import io.opentelemetry.semconv.ResourceAttributes;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import java.time.Duration;
+
+@Configuration
+public class OpenTelemetryConfig {
+
+    @Value("${otel.service.name:order-processing-service}")
+    private String serviceName;
+
+    @Value("${otel.exporter.otlp.endpoint:http://localhost:4317}")
+    private String otlpEndpoint;
+
+    @Value("${otel.resource.attributes:}")
+    private String resourceAttributesString; // e.g., "deployment.environment=development,host.name=my-server"
+
+    @Bean
+    public OpenTelemetry openTelemetry() {
+        // Configure resource attributes for this service
+        Resource serviceResource = Resource.getDefault()
+                .merge(Resource.builder().put(ResourceAttributes.SERVICE_NAME, serviceName).build());
+
+        // Add additional attributes from configuration
+        if (!resourceAttributesString.isEmpty()) {
+            Attributes.Builder attributesBuilder = Attributes.builder();
+            for (String attr : resourceAttributesString.split(",")) {
+                String[] parts = attr.split("=");
+                if (parts.length == 2) {
+                    attributesBuilder.put(parts[0].trim(), parts[1].trim());
+                }
+            }
+            serviceResource = serviceResource.merge(Resource.builder().putAll(attributesBuilder.build()).build());
+        }
+
+
+        // Configure the OTLP exporter
+        OtlpGrpcSpanExporter otlpSpanExporter = OtlpGrpcSpanExporter.builder()
+                .setEndpoint(otlpEndpoint)
+                .setTimeout(Duration.ofSeconds(5)) // Optional: set export timeout
+                .build();
+
+        // Configure the TracerProvider to use the OTLP exporter
+        SdkTracerProvider sdkTracerProvider = SdkTracerProvider.builder()
+                .addSpanProcessor(BatchSpanProcessor.builder(otlpSpanExporter).build())
+                .setResource(serviceResource)
+                .build();
+
+        // Initialize the OpenTelemetry SDK
+        return OpenTelemetrySdk.builder()
+                .setTracerProvider(sdkTracerProvider)
+                .buildAndRegisterGlobal(); // Set as the global OpenTelemetry instance
+    }
+}
+```
+
+Make sure your application.properties includes the required values:
+
+```
+otel.service.name=order-processing-service
+otel.exporter.otlp.endpoint=http://localhost:4317
+# otel.resource.attributes=deployment.environment=development,host.name=my-server
+```
+
+**Manual Span Creation in Camel Routes**
+
+Now, let's see how to create custom spans within a Camel route, typically inside a Processor or a custom Bean.
+
+```java
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.context.Context;
+import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
+import org.springframework.stereotype.Component;
+
+@Component("orderValidationProcessor")
+public class OrderValidationProcessor implements Processor {
+
+    private final Tracer tracer;
+
+    // OpenTelemetry is configured as a global instance or can be injected
+    public OrderValidationProcessor(OpenTelemetry openTelemetry) {
+        this.tracer = openTelemetry.getTracer("order-processing-service", "1.0.0"); // Tracer name and version
+    }
+
+    @Override
+    public void process(Exchange exchange) throws Exception {
+        // Start a new child span for this specific operation
+        // Ensure context propagation: retrieve current context (if any) from the exchange
+        // OpenTelemetry Java Agent usually handles injecting context into Camel Exchange properties.
+        // If not using agent, you might need to extract context from headers manually.
+        Context parentContext = Context.current(); // Or extract from exchange.getMessage().getHeader()
+        // For simplicity and assuming agent support or proper context propagation setup:
+        // Camel typically uses `io.opentelemetry.context.Context` in exchange properties.
+        // We can create a child span relative to the currently active span.
+
+        // Get current span from context or create a new one if not present
+        Span parentSpan = Span.current(); // Gets the currently active span from the context
+
+        Span validationSpan = tracer.spanBuilder("OrderValidation")
+                .setParent(parentSpan.getContext()) // Link to the parent span found in the context
+                .startSpan();
+
+        try (io.opentelemetry.context.Scope scope = validationSpan.makeCurrent()) {
+            // Your order validation logic here
+            String orderId = exchange.getProperty("orderId", String.class);
+            boolean isValid = Math.random() > 0.1; // Simulate validation logic
+
+            validationSpan.setAttribute("order.id", orderId);
+            validationSpan.setAttribute("order.validation.result", isValid ? "success" : "failure");
+
+            if (!isValid) {
+                validationSpan.setStatus(io.opentelemetry.api.trace.StatusCode.ERROR, "Order validation failed");
+                exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalArgumentException("Invalid order data"));
+            } else {
+                validationSpan.addEvent("Order data validated successfully");
+                // Continue processing the order
+                exchange.getIn().setBody("Validated Order for ID: " + orderId);
+            }
+        } finally {
+            validationSpan.end(); // Always end the span
+        }
+    }
+}
+```
+
+And in your Camel route:
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OrderProcessingRoute extends RouteBuilder {
+
+    @Override
+    public void configure() {
+        from("direct:processOrder")
+            .routeId("orderProcessingRoute")
+            .log("Received order for processing: ${body}")
+            .setProperty("orderId", simple("${header.orderId}")) // Assume orderId comes in a header
+            .process("orderValidationProcessor") // Our custom processor with manual tracing
+            .choice()
+                .when(exchangeProperty("Exchange.EXCEPTION_CAUGHT").isNotNull())
+                    .log("Order validation failed for ID: ${exchangeProperty.orderId}")
+                    .to("log:invalidOrderLogger?level=WARN")
+                    .stop() // Stop further processing for invalid orders
+                .otherwise()
+                    .log("Order valid. Sending to JMS for persistence: ${body}")
+                    .to("jms:queue:orders.persisted") // Next step, handled by another service/route
+            .end();
+    }
+}
+```
+
+In this example:
+
+- We inject OpenTelemetry to obtain a Tracer.
+- Inside the process method, we create a new span named "OrderValidation" that is a child of the currently active span (which would be automatically created by the Java Agent for the from("direct:processOrder") endpoint).
+- We add specific business attributes like order.id and order.validation.result.
+- We set the span status to ERROR if validation fails and add an event for success.
+- The try-with-resources block ensures the span's context is active during the validation logic, and the finally block guarantees the span is ended.
+
+**Camel OpenTelemetry Component (camel-opentelemetry)**
+
+Beyond the Java Agent and manual SDK usage, Apache Camel offers a specific component, camel-opentelemetry, to provide first-class support for distributed tracing. This component simplifies context propagation and span management for Camel routes.
+
+To use it, add the dependency:
+
+```xml
+<dependency>
+    <groupId>org.apache.camel</groupId>
+    <artifactId>camel-opentelemetry</artifactId>
+    <version>${camel.version}</version> <!-- Ensure this matches your Camel version -->
+</dependency>
+```
+
+When camel-opentelemetry is on the classpath and a global OpenTelemetry instance is available (either from the Java Agent or your Spring @Bean configuration), Camel will automatically:
+
+- Create spans for each from() and to() endpoint.
+- Inject and extract trace context from messages (e.g., HTTP headers, JMS properties).
+- Associate spans with Exchange IDs.
+
+This significantly reduces the need for manual instrumentation for basic route steps. You would still use manual instrumentation for custom processors or specific business logic that you want to isolate as distinct spans within your routes.
 
 #### <a name="chapter5part5.4"></a>Chapter 5 - Part 5.4: Configuring OpenTelemetry for Exporting Traces
 
+Once your application is instrumented (either automatically with the agent or manually), the telemetry data needs to be exported to a backend system where it can be stored, analyzed, and visualized.
+
+**Exporters**
+
+OpenTelemetry supports various exporters, but the OTLP (OpenTelemetry Protocol) Exporter is the recommended standard. OTLP is a universal protocol that all OpenTelemetry SDKs and the Collector use to send telemetry data.
+
+- **OTLP Exporter**: Sends data over gRPC (default) or HTTP. It's designed for efficiency and is the native way to get your OTel data out. Most modern observability backends (Jaeger, Grafana Tempo, Honeycomb, Datadog, etc.) directly support OTLP ingesion, or they can receive it via an OpenTelemetry Collector.
+  - Configuration via properties/environment variables for the Java Agent: OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 (default for gRPC collector) OTEL_EXPORTER_OTLP_PROTOCOL=grpc (or http/protobuf)
+  - Configuration for programmatic SDK: Shown in the OpenTelemetryConfig @Bean example above.
+- **Other Exporters (Legacy/Specific)**:
+  - **Jaeger Exporter**: Sends data directly to a Jaeger agent or collector. Often used in older setups.
+  - **Zipkin Exporter**: Sends data directly to a Zipkin collector. Also for older setups.
+ 
+While these are available, the OTLP exporter is generally preferred as it's more flexible and future-proof.
+
+**OpenTelemetry Collector**
+
+The OpenTelemetry Collector is a powerful and flexible component in the OpenTelemetry ecosystem. It acts as an intermediary between your instrumented applications and your observability backend(s).
+
+**Role of the Collector:**
+
+- **Receiving**: It can receive telemetry data in various formats (OTLP, Jaeger, Zipkin, Prometheus, etc.) from multiple applications.
+- **Processing**: It can process, filter, sample, batch, and transform telemetry data. This is useful for enriching data with common attributes, redacting sensitive information, or aggregating metrics.
+- **Exporting**: It can export processed telemetry data to one or more observability backends, even if they use different protocols.
+
+**Benefits of using the Collector:**
+
+- **Reduced Overhead**: Applications send data to a local collector, which then handles sending to the remote backend, reducing network latency and retries for the application.
+- **Centralized Configuration**: All export configurations are managed in one place (the collector), rather than in each application.
+- **Data Transformation**: Allows for enriching, filtering, and sampling data before it reaches the backend, saving costs and improving relevance.
+- **Vendor Agnosticism**: You can switch backends by only reconfiguring the collector, not your applications.
+
+**Example Collector Configuration (YAML):**
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  batch: # Batch spans for efficient export
+    send_batch_size: 100
+    timeout: 10s
+
+exporters:
+  otlp:
+    endpoint: "jaeger:4317" # Example: Exporting to a Jaeger collector's OTLP endpoint
+    tls:
+      insecure: true # Use insecure for local development, production needs proper TLS
+
+  logging: # Good for debugging: logs all received telemetry to console
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp, logging] # Send to both OTLP and log for debugging
+```
+
+In this example, the collector:
+
+- Listens for OTLP gRPC and HTTP requests.
+- Batches received traces.
+- Exports traces via OTLP to a Jaeger service (assuming jaeger is a hostname resolvable to your Jaeger collector) and also logs them.
+
+You would run the OpenTelemetry Collector as a separate process, often in a Docker container alongside your application.
+
 #### <a name="chapter5part5.5"></a>Chapter 5 - Part 5.5: Practical Example: Observing Order Flows with OpenTelemetry
+
+Let's expand our E-commerce Order Processing case study to demonstrate how OpenTelemetry helps observe an order's journey.
+
+**Scenario:**
+
+- A REST API endpoint (/orders) receives new order requests.
+- Our order-processing-service (Spring Boot + Apache Camel) handles this:
+  - It receives the order via a Camel servlet or netty-http endpoint.
+  - A custom OrderValidator processor (as shown previously) validates the order, adding custom attributes.
+  - If valid, the order is sent to a JMS queue (orders.pending_payment).
+- A hypothetical payment-service (another Spring Boot application) consumes from orders.pending_payment, processes payment, and sends to orders.fulfilled.
+
+**Setup for order-processing-service:**
+
+**1. Dependencies (pom.xml)**: Ensure you have camel-spring-boot-starter, camel-servlet (or camel-netty-http), camel-jackson, camel-jms, and the OpenTelemetry API/SDK/Exporter dependencies as detailed in the "Manual Instrumentation" section.
+
+**2. application.properties**:
+
+```
+# Spring Boot application properties
+spring.application.name=order-processing-service
+server.port=8080
+
+# JMS Configuration (e.g., ActiveMQ)
+camel.component.jms.brokerURL=tcp://localhost:61616
+
+# OpenTelemetry Configuration (can also be passed as JVM args or ENV vars)
+otel.service.name=${spring.application.name}
+otel.exporter.otlp.endpoint=http://localhost:4317 # Assuming OTel Collector running locally
+```
+
+**3. OpenTelemetryConfig.java: The @Configuration class provided earlier to set up the OpenTelemetry bean.**
+
+**4. OrderValidationProcessor.java: The Processor class provided earlier for manual span creation.**
+
+**5. OrderProcessingRoute.java:**
+
+```java
+import org.apache.camel.builder.RouteBuilder;
+import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+
+@Component
+public class OrderProcessingRoute extends RouteBuilder {
+
+    @Autowired
+    private OpenTelemetry openTelemetry; // Inject the global OpenTelemetry instance
+
+    private Tracer tracer;
+
+    @Override
+    public void configure() {
+        // Initialize tracer once configure is called
+        tracer = openTelemetry.getTracer("order-processing-route-builder", "1.0.0");
+
+        // REST endpoint to receive new orders
+        from("servlet:///orders?httpMethodRestrict=POST") // Using servlet component for simplicity
+            .routeId("receiveOrderApi")
+            .log("API: Received HTTP POST for order. Body: ${body}")
+            .unmarshal().json() // Assuming JSON input
+            .setProperty("orderId", jsonpath("$.orderId")) // Extract orderId from JSON
+            .setProperty("customerId", jsonpath("$.customerId"))
+            .log("Processing order ID: ${exchangeProperty.orderId}")
+            // Call the direct endpoint for internal processing
+            .to("direct:processNewOrder")
+            .setBody(simple("Order ${exchangeProperty.orderId} received and sent for processing."))
+            .setHeader("Content-Type", constant("text/plain"));
+
+        // Internal route for processing new orders
+        from("direct:processNewOrder")
+            .routeId("internalOrderProcessing")
+            .log("Internal: Starting order processing for ID: ${exchangeProperty.orderId}")
+            // Custom processor for validation with manual tracing
+            .process("orderValidationProcessor") // This processor creates its own child span
+            .choice()
+                .when(exchangeProperty("Exchange.EXCEPTION_CAUGHT").isNotNull())
+                    .log("Order validation failed for ID: ${exchangeProperty.orderId}. Exception: ${exception.message}")
+                    .setHeader("CamelHttpResponseCode", constant(400)) // Bad Request
+                    .setBody(simple("Order validation failed: ${exception.message}"))
+                    .stop()
+                .otherwise()
+                    .log("Order ${exchangeProperty.orderId} valid. Publishing to JMS queue 'orders.pending_payment'")
+                    // The camel-jms component (especially with the Java Agent or camel-opentelemetry)
+                    // will automatically propagate the trace context to the JMS message headers.
+                    .to("jms:queue:orders.pending_payment")
+                    .log("Order ${exchangeProperty.orderId} sent to JMS for payment processing.");
+            // No explicit span around 'to("jms")' because camel-opentelemetry or Java Agent handles it.
+    }
+}
+```
+
+**6. Running with OpenTelemetry Java Agent (Optional, but recommended for simplicity)**: Even with manual instrumentation for specific parts, running your Spring Boot application with the OTel Java Agent simplifies setup significantly for all other libraries.
+
+```
+# Start ActiveMQ (e.g., via Docker)
+# docker run -p 61616:61616 -p 8161:8161 apache/activemq:5.18.3
+
+# Start OpenTelemetry Collector (e.g., via Docker)
+# docker run -p 4317:4317 -p 4318:4318 -p 14250:14250 -p 14268:14268 -p 6831:6831/udp -p 6832:6832/udp \
+#   -v /path/to/collector-config.yaml:/etc/otel-collector-config.yaml \
+#   otel/opentelemetry-collector-contrib:latest --config /etc/otel-collector-config.yaml
+
+# Download the Java Agent
+# wget https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
+
+# Run your Spring Boot app
+java -javaagent:/path/to/opentelemetry-javaagent.jar \
+     -Dotel.service.name=order-processing-service \
+     -Dotel.traces.exporter=otlp \
+     -Dotel.exporter.otlp.endpoint=http://localhost:4317 \
+     -Dcamel.springboot.javaRoutes="classpath:org/example/OrderProcessingRoute.class" \
+     -jar target/your-camel-app.jar
+```
+
+Now, when you send a POST request to http://localhost:8080/orders with a JSON body:
+
+```json
+{
+  "orderId": "ORD-001",
+  "customerId": "CUST-123",
+  "items": [
+    {"productId": "P1", "quantity": 1},
+    {"productId": "P2", "quantity": 2}
+  ]
+}
+```
+
+You will generate a trace that looks something like this (visualized in a tracing UI like Jaeger):
+
+- **HTTP POST /orders** (root span, automatically created by OTel Java Agent for Spring Web)
+  - **receiveOrderApi** (Camel route span, automatically created by camel-opentelemetry or agent)
+    - **internalOrderProcessing** (Camel route span, automatically created)
+      - **OrderValidation** (manual span from OrderValidationProcessor)
+        - **Attributes**: order.id="ORD-001", order.validation.result="success"
+      - **jms**:queue:orders.pending_payment Send (span for sending to JMS, automatically created)
+     
+This trace clearly shows the flow, the duration of each step, and custom business context added during validation. If payment-service were also instrumented with OpenTelemetry and consumed from orders.pending_payment, it would continue the same trace, creating new child spans for its payment processing logic, offering true end-to-end visibility across services.
 
 #### <a name="chapter5part6"></a>Chapter 5 - Part 6: Customizing Camel Context and Component Settings Programmatically
 
+While Spring Boot's auto-configuration and external configuration capabilities, as explored in previous lessons, provide a robust and often sufficient way to manage Apache Camel applications, there are scenarios where a more granular, programmatic approach is necessary. This lesson delves into how you can directly interact with and customize the Camel Context and its various components using Java code within your Spring Boot application. This level of control is invaluable when you need to implement dynamic configurations, complex conditional logic, or integrate with custom external services that demand bespoke client setups, going beyond what declarative configuration files can offer. By mastering programmatic customization, you gain the flexibility to tailor your integration solutions precisely to the most intricate enterprise requirements.
+
 #### <a name="chapter5part6.1"></a>Chapter 5 - Part 6.1: Understanding the Camel Context and its Programmatic Customization
+
+The CamelContext is the runtime system of Apache Camel, orchestrating all routes, components, endpoints, and other elements. In a Spring Boot application, an instance of CamelContext is automatically configured and managed as a Spring bean by the camel-spring-boot-starter. This allows us to inject and modify it programmatically.
+
+**Accessing the CamelContext Bean**
+
+Since CamelContext is a Spring bean, you can inject it into any other Spring-managed component (like a service, a configuration class, or even directly into your route builder) using @Autowired. This provides you with direct access to its methods for customization.
+
+Consider a scenario where you want to set a custom name for your Camel Context or enable specific features that aren't exposed via application.properties directly, or perhaps you want to do this conditionally at runtime.
+
+```java
+import org.apache.camel.CamelContext;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.stereotype.Component;
+
+@Component
+public class CamelContextCustomizer implements CommandLineRunner {
+
+    private final CamelContext camelContext;
+
+    @Autowired
+    public CamelContextCustomizer(CamelContext camelContext) {
+        this.camelContext = camelContext;
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        System.out.println("Camel Context Name (before customization): " + camelContext.getName());
+        
+        // Programmatically set a custom name for the Camel Context
+        camelContext.setName("ECommerceOrderProcessingContext");
+        
+        // Enable or disable specific features
+        // For example, if you want to explicitly disable stream caching for performance
+        // (though often better configured at route level or via properties)
+        camelContext.setStreamCaching(false); 
+        
+        // Log details about exchanges for debugging
+        camelContext.setTracing(true); // Enable tracing for all routes within this context
+
+        System.out.println("Camel Context Name (after customization): " + camelContext.getName());
+        System.out.println("Stream Caching enabled: " + camelContext.isStreamCaching());
+        System.out.println("Tracing enabled: " + camelContext.isTracing());
+    }
+}
+```
+
+In this example:
+
+- We inject the CamelContext into a CommandLineRunner bean, which ensures our customization logic runs once the Spring application context has started and before routes begin processing messages.
+- We demonstrate setting a custom name, enabling/disabling stream caching, and enabling tracing. These are just a few examples; the CamelContext interface offers many methods for fine-grained control over its lifecycle and behavior.
+
+**Using CamelContextConfiguration for Early Customization**
+
+For configurations that need to happen very early in the CamelContext lifecycle, even before routes are added, Spring Boot provides the CamelContextConfiguration interface. You can create a Spring bean that implements this interface, and its beforeApplicationStart method will be invoked right after the CamelContext is created but before it's started. This is particularly useful for registering custom components or setting up global error handlers.
+
+```java
+import org.apache.camel.CamelContext;
+import org.apache.camel.spring.boot.CamelContextConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class CustomCamelContextConfig {
+
+    @Bean
+    public CamelContextConfiguration camelContextConfiguration() {
+        return new CamelContextConfiguration() {
+            @Override
+            public void beforeApplicationStart(CamelContext camelContext) {
+                // This method is called before CamelContext starts.
+                // Useful for very early initialization or registration.
+                camelContext.setName("ECommercePrimaryContext"); // Set name early
+                camelContext.getPropertiesComponent().addOverrideProperty("myProperty", "myProgrammaticValue");
+                System.out.println("CamelContextConfiguration: Camel Context name set to " + camelContext.getName());
+            }
+
+            @Override
+            public void afterApplicationStart(CamelContext camelContext) {
+                // This method is called after CamelContext has started.
+                // Useful for post-startup validation or logging.
+                System.out.println("CamelContextConfiguration: Camel Context '" + camelContext.getName() + "' has started.");
+            }
+        };
+    }
+}
+```
+
+Here, we define a @Configuration class and declare a CamelContextConfiguration bean. The beforeApplicationStart method is an ideal place for critical, pre-startup customizations.
 
 #### <a name="chapter5part6.2"></a>Chapter 5 - Part 6.2: Programmatic Configuration of Camel Components
 
+While application.properties (or YAML) is excellent for configuring most components, some scenarios demand programmatic control:
+
+- **Dynamic Configuration**: When component properties depend on runtime values, external service discovery, or complex conditional logic not solvable with property placeholders.
+- **Custom Client Factories**: When a component needs a custom client (e.g., a specific HttpClient instance for http component, or a custom JMSConnectionFactory for jms).
+- **Complex Objects**: When a component property is a complex Java object that cannot be easily represented as a string in a configuration file.
+- **Registering Custom Components**: When you've developed your own custom Camel component and need to register its instance with the CamelContext.
+
+**Registering Custom Components as Spring Beans**
+
+The simplest way to make a custom org.apache.camel.Component available to Camel is to register it as a Spring bean. Spring Boot's camel-spring-boot-starter automatically discovers and registers any org.apache.camel.Component beans found in the application context.
+
+Imagine you've developed a MyCustomProcessorComponent that integrates with a proprietary payment gateway.
+
+```java
+// MyCustomProcessorComponent.java - This would be your custom Camel Component implementation
+package com.ecommerce.camel.component;
+
+import org.apache.camel.Endpoint;
+import org.apache.camel.support.DefaultComponent;
+
+import java.util.Map;
+
+public class MyCustomProcessorComponent extends DefaultComponent {
+
+    private String apiKey; // A custom property for your component
+
+    public String getApiKey() {
+        return apiKey;
+    }
+
+    public void setApiKey(String apiKey) {
+        this.apiKey = apiKey;
+    }
+
+    @Override
+    protected Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) throws Exception {
+        MyCustomProcessorEndpoint endpoint = new MyCustomProcessorEndpoint(uri, this, remaining);
+        endpoint.setApiKey(this.apiKey); // Pass the API key to the endpoint
+        setProperties(endpoint, parameters);
+        return endpoint;
+    }
+}
+
+// ... MyCustomProcessorEndpoint.java and MyCustomProcessorProducer.java would also be defined ...
+```
+
+Now, register this custom component as a Spring bean:
+
+```java
+import com.ecommerce.camel.component.MyCustomProcessorComponent;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class CustomComponentConfiguration {
+
+    @Bean
+    public MyCustomProcessorComponent myCustomProcessor() {
+        MyCustomProcessorComponent component = new MyCustomProcessorComponent();
+        // Programmatically set properties on your custom component instance
+        // This could come from a secure vault, a dynamic lookup, etc.
+        component.setApiKey("some_dynamic_or_secure_api_key_from_vault"); 
+        System.out.println("Registered custom component 'myCustomProcessor' with API Key: " + component.getApiKey());
+        return component;
+    }
+}
+```
+
+Once registered, you can use this component in your routes like any other: from("myCustomProcessor:processOrders"). Camel will automatically discover the myCustomProcessor bean and use it.
+
+**Configuring Existing Components Programmatically**
+
+For standard Camel components like jms, file, http, rest, etc., you often need to provide a custom configuration object, such as a JmsConnectionFactory for the jms component or a HttpClient for the http component.
+
+**Customizing the JMS Component**
+
+In our E-commerce Order Processing case study, we use the jms component for asynchronous processing. Suppose you need to configure a very specific CachingConnectionFactory with custom session cache sizes or a different message listener container that's not easily configured via application.properties.
+
+First, you define your custom JmsConnectionFactory as a Spring bean:
+
+```java
+import jakarta.jms.ConnectionFactory;
+import org.apache.activemq.ActiveMQConnectionFactory;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jms.connection.CachingConnectionFactory;
+
+@Configuration
+public class JmsCustomConfig {
+
+    @Bean(name = "customJmsConnectionFactory")
+    public ConnectionFactory jmsConnectionFactory() {
+        // Create a standard ActiveMQConnectionFactory
+        ActiveMQConnectionFactory activeMQConnectionFactory = new ActiveMQConnectionFactory();
+        activeMQConnectionFactory.setBrokerURL("tcp://localhost:61616"); // Assuming ActiveMQ broker
+
+        // Wrap it with Spring's CachingConnectionFactory for performance
+        CachingConnectionFactory cachingConnectionFactory = new CachingConnectionFactory(activeMQConnectionFactory);
+        cachingConnectionFactory.setSessionCacheSize(50); // Custom cache size
+        cachingConnectionFactory.setCacheConsumers(true); // Cache consumers as well
+
+        System.out.println("Custom JMS ConnectionFactory created with session cache size: " + cachingConnectionFactory.getSessionCacheSize());
+        return cachingConnectionFactory;
+    }
+}
+```
+
+Next, you need to tell the Camel jms component to use this custom ConnectionFactory. Camel components look for specific bean names or allow direct assignment. For jms, if you name your connection factory bean jmsConnectionFactory, Camel picks it up by default. If it's named differently (like customJmsConnectionFactory above), you need to explicitly configure the jms component.
+
+You can configure the jms component by creating an instance of org.apache.camel.component.jms.JmsComponent as a Spring bean:
+
+```java
+import org.apache.camel.component.jms.JmsComponent;
+import jakarta.jms.ConnectionFactory;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class JmsComponentProgrammaticConfig {
+
+    // Autowire the custom connection factory we defined earlier
+    private final ConnectionFactory customJmsConnectionFactory;
+
+    public JmsComponentProgrammaticConfig(ConnectionFactory customJmsConnectionFactory) {
+        this.customJmsConnectionFactory = customJmsConnectionFactory;
+    }
+
+    @Bean(name = "jms") // Name the bean "jms" so Camel uses it for the 'jms' component
+    public JmsComponent customJmsComponent() {
+        JmsComponent jmsComponent = new JmsComponent();
+        jmsComponent.setConnectionFactory(customJmsConnectionFactory);
+        
+        // Further programmatic settings for the JMS component
+        jmsComponent.setTransacted(true); // Enable transactions for this JMS component
+        jmsComponent.setConcurrentConsumers(10); // Set concurrency
+        
+        System.out.println("Camel JMS Component configured programmatically with custom connection factory.");
+        System.out.println("JMS Component Transacted: " + jmsComponent.isTransacted());
+        return jmsComponent;
+    }
+}
+```
+
+Now, any route using jms: will use this programmatically configured component with the custom CachingConnectionFactory, transaction settings, and concurrency.
+
+**Customizing the HTTP Component**
+
+For the http (or http4) component, you might need to configure a custom HttpClient to handle specific proxy settings, SSL contexts, or connection pooling mechanisms that are not directly exposed as simple properties.
+
+```java
+import org.apache.camel.component.http.HttpComponent;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory;
+import org.apache.hc.core5.ssl.SSLContexts;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import javax.net.ssl.SSLContext;
+import java.security.KeyManagementException;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+
+@Configuration
+public class HttpComponentProgrammaticConfig {
+
+    @Bean(name = "httpClient") // Define a custom HttpClient bean
+    public CloseableHttpClient customHttpClient() throws NoSuchAlgorithmException, KeyManagementException, KeyStoreException {
+        // Example: Configure SSL context to trust specific certificates
+        SSLContext sslContext = SSLContexts.custom()
+                .loadTrustMaterial(null, (chain, authType) -> true) // Trust all certificates (for demo, not recommended for prod!)
+                .build();
+
+        SSLConnectionSocketFactory sslSocketFactory = new SSLConnectionSocketFactory(sslContext);
+
+        // Configure connection pooling
+        PoolingHttpClientConnectionManager connectionManager = PoolingHttpClientConnectionManagerBuilder.create()
+                .setSSLSocketFactory(sslSocketFactory)
+                .setMaxTotal(50) // Max total connections
+                .setDefaultMaxPerRoute(20) // Max connections per route
+                .build();
+
+        CloseableHttpClient httpClient = HttpClients.custom()
+                .setConnectionManager(connectionManager)
+                // Add other customizations like proxy, authentication, etc.
+                .build();
+
+        System.out.println("Custom CloseableHttpClient created with connection pooling and SSL configuration.");
+        return httpClient;
+    }
+
+    @Bean(name = "http") // Name the bean "http" so Camel uses it for the 'http' component
+    public HttpComponent customHttpComponent(CloseableHttpClient httpClient) {
+        HttpComponent httpComponent = new HttpComponent();
+        // Assign our custom HttpClient instance to the Camel HTTP component
+        httpComponent.setClientBuilder(new org.apache.camel.component.http.HttpClientBuilder() {
+            @Override
+            protected CloseableHttpClient createHttpClient() {
+                return httpClient; // Use our pre-configured client
+            }
+        });
+        
+        // You can also set other properties directly if needed
+        httpComponent.setBridgeEndpoint(true);
+
+        System.out.println("Camel HTTP Component configured programmatically with custom HttpClient.");
+        return httpComponent;
+    }
+}
+```
+
+In this example:
+
+- We create a CloseableHttpClient bean (customHttpClient) with specific SSL and connection pooling settings. Note: Trusting all certificates (.loadTrustMaterial(null, (chain, authType) -> true)) is a security risk and should only be used in controlled test environments.
+- We then create an HttpComponent bean named "http" and inject our customHttpClient into it using a HttpClientBuilder. This ensures all http: endpoints use this customized client.
+
 #### <a name="chapter5part6.3"></a>Chapter 5 - Part 6.3: Practical Examples and Demonstrations: E-commerce Order Processing
+
+Let's integrate these concepts into our E-commerce Order Processing case study.
+
+**Scenario 1: Dynamic Order Priority JMS Configuration**
+
+Our E-commerce system processes orders via JMS. We have high-priority orders and regular orders. For high-priority orders, we want to ensure they use a JMS connection factory with a larger session cache and perhaps a different broker URL if a dedicated high-priority message broker exists.
+
+Instead of defining two separate jms components in application.properties, we can conditionally configure one based on a runtime flag or profile.
+
+```java
+import jakarta.jms.ConnectionFactory;
+import org.apache.activemq.ActiveMQConnectionFactory;
+import org.apache.camel.component.jms.JmsComponent;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.jms.connection.CachingConnectionFactory;
+
+@Configuration
+public class OrderPriorityJmsConfig {
+
+    @Value("${priority.broker.url:tcp://localhost:61616}")
+    private String priorityBrokerUrl;
+
+    @Value("${default.broker.url:tcp://localhost:61616}")
+    private String defaultBrokerUrl;
+
+    @Bean(name = "priorityJms") // For high-priority orders
+    @Profile("high-priority-env") // Activate this configuration under 'high-priority-env' profile
+    public JmsComponent priorityJmsComponent() {
+        ActiveMQConnectionFactory activeMQConnectionFactory = new ActiveMQConnectionFactory();
+        activeMQConnectionFactory.setBrokerURL(priorityBrokerUrl);
+
+        CachingConnectionFactory cachingConnectionFactory = new CachingConnectionFactory(activeMQConnectionFactory);
+        cachingConnectionFactory.setSessionCacheSize(100); // Larger cache for priority
+        cachingConnectionFactory.setCacheProducers(true);
+        cachingConnectionFactory.setCacheConsumers(true);
+
+        JmsComponent jmsComponent = new JmsComponent();
+        jmsComponent.setConnectionFactory(cachingConnectionFactory);
+        jmsComponent.setDeliveryPersistent(true); // Ensure delivery for priority
+        jmsComponent.setAllowNullTextMessages(true);
+
+        System.out.println("Configured 'priorityJms' component for high-priority orders using broker: " + priorityBrokerUrl);
+        return jmsComponent;
+    }
+
+    @Bean(name = "regularJms") // For regular orders
+    @Profile("!high-priority-env") // Activate this when 'high-priority-env' profile is NOT active
+    public JmsComponent regularJmsComponent() {
+        ActiveMQConnectionFactory activeMQConnectionFactory = new ActiveMQConnectionFactory();
+        activeMQConnectionFactory.setBrokerURL(defaultBrokerUrl);
+
+        CachingConnectionFactory cachingConnectionFactory = new CachingConnectionFactory(activeMQConnectionFactory);
+        cachingConnectionFactory.setSessionCacheSize(20); // Smaller cache for regular
+        cachingConnectionFactory.setCacheProducers(true);
+
+        JmsComponent jmsComponent = new JmsComponent();
+        jmsComponent.setConnectionFactory(cachingConnectionFactory);
+        jmsComponent.setDeliveryPersistent(false); // Non-persistent for regular
+        jmsComponent.setAllowNullTextMessages(false);
+
+        System.out.println("Configured 'regularJms' component for regular orders using broker: " + defaultBrokerUrl);
+        return jmsComponent;
+    }
+    
+    // Example route that uses these components
+    // This could be in your main RouteBuilder or a separate one
+    // @Component
+    // public class OrderProcessingRoute extends RouteBuilder {
+    //    @Override
+    //    public void configure() {
+    //        from("direct:processOrder")
+    //            .choice()
+    //                .when(header("orderType").isEqualTo("HIGH_PRIORITY"))
+    //                    .to("priorityJms:queue:orders.high_priority")
+    //                .otherwise()
+    //                    .to("regularJms:queue:orders.regular")
+    //            .end();
+    //    }
+    // }
+}
+```
+
+In this setup:
+
+- We use Spring's @Profile annotation to conditionally activate one JmsComponent bean over another.
+- priorityJms is active when the high-priority-env profile is enabled (e.g., via -Dspring.profiles.active=high-priority-env JVM argument). It uses a larger cache and persistent delivery.
+- regularJms is active otherwise, using a smaller cache and non-persistent delivery.
+- Routes can then use priorityJms: or regularJms: endpoints, allowing the programmatic configuration to dictate their behavior. This provides runtime flexibility based on deployment environment or specific order characteristics.
+
+**Scenario 2: Dynamic API Key for External Payment Gateway Integration**
+
+Our E-commerce system integrates with an external payment gateway using the http component. The API key for this gateway might change frequently, be environment-specific, or fetched from a secure vault at startup. It's not ideal to hardcode it or even place it in plain application.properties.
+
+We can create a Processor bean that injects the dynamic API key into the HTTP headers, or even create a custom HttpComponent that dynamically fetches the key. Let's focus on configuring the HttpComponent directly for global effect.
+
+Suppose we have an ApiKeyService that retrieves the API key.
+
+```java
+import org.springframework.stereotype.Service;
+
+@Service
+public class ApiKeyService {
+    public String getPaymentGatewayApiKey() {
+        // In a real application, this would fetch from a secure vault,
+        // environment variable, or database. For demo, a hardcoded value.
+        String apiKey = System.getenv("PAYMENT_API_KEY");
+        if (apiKey == null || apiKey.isEmpty()) {
+            apiKey = "DYNAMIC_SECURE_PAYMENT_API_KEY_12345"; // Fallback or default
+        }
+        System.out.println("Payment Gateway API Key retrieved: " + apiKey.substring(0, 10) + "..."); // Mask for logging
+        return apiKey;
+    }
+}
+```
+
+Now, we can use this service when configuring our http component. Since http component itself does not take a header property, we'll configure a generic Processor that adds this header, demonstrating how Spring beans can inject dynamic values into routes. However, if we wanted to globally apply a header to all calls made by a specific http component instance, we'd need to extend HttpComponent or provide a custom HttpClientBuilder that decorates requests. Let's modify the HttpClientBuilder approach for a global header.
+
+```java
+import org.apache.camel.component.http.HttpComponent;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.core5.http.Header;
+import org.apache.hc.core5.http.message.BasicHeader;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import java.util.Collections;
+import java.util.List;
+
+@Configuration
+public class PaymentGatewayHttpConfig {
+
+    private final ApiKeyService apiKeyService;
+
+    public PaymentGatewayHttpConfig(ApiKeyService apiKeyService) {
+        this.apiKeyService = apiKeyService;
+    }
+
+    @Bean(name = "paymentGatewayHttp") // Name this specific HTTP component
+    public HttpComponent paymentGatewayHttpComponent() {
+        String dynamicApiKey = apiKeyService.getPaymentGatewayApiKey();
+        
+        HttpComponent httpComponent = new HttpComponent();
+        
+        // Custom HttpClientBuilder to add a default Authorization header
+        httpComponent.setClientBuilder(new org.apache.camel.component.http.HttpClientBuilder() {
+            @Override
+            protected CloseableHttpClient createHttpClient() {
+                // Build a default HttpClient, or a custom one if needed
+                return HttpClients.custom()
+                        // Add a request interceptor to include the Authorization header dynamically
+                        .addRequestInterceptorLast((request, entity, context) -> {
+                            Header authHeader = new BasicHeader("Authorization", "Bearer " + dynamicApiKey);
+                            request.addHeader(authHeader);
+                        })
+                        .build();
+            }
+        });
+
+        System.out.println("Payment Gateway HTTP Component configured programmatically with dynamic API Key.");
+        return httpComponent;
+    }
+    
+    // Example route using this custom HTTP component
+    // @Component
+    // public class PaymentProcessingRoute extends RouteBuilder {
+    //    @Override
+    //    public void configure() {
+    //        from("direct:submitPayment")
+    //            .log("Submitting payment for order: ${body}")
+    //            .to("paymentGatewayHttp:https://api.paymentgateway.com/v1/payments"); // Uses our custom component
+    //    }
+    // }
+}
+```
+
+In this enhanced example:
+
+- The ApiKeyService fetches the API key dynamically.
+- A specific HttpComponent bean named paymentGatewayHttp is created.
+- A custom HttpClientBuilder is provided to this HttpComponent. Inside the createHttpClient method of this builder, we create an HttpClient that includes a request interceptor. This interceptor dynamically adds the Authorization header with the fetched API key to every request made through this paymentGatewayHttp component.
+- This ensures that any route using paymentGatewayHttp: endpoint will automatically have the correct, dynamically supplied API key.
 
 ## <a name="chapter6"></a>Chapter 6: Advanced Scenarios, Security, and Deployment
 
